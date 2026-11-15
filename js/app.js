@@ -6,11 +6,11 @@ import { Tracker } from './tracker.js';
 import { MapView } from './mapview.js';
 import { buildNetwork } from './merge.js';
 import { buildKml, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
-import { prepareReference, nameSegments, coverage } from './reference.js';
+import { prepareReference, nameSegments, coverage, overlapShare } from './reference.js';
 import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.4'; // keep in step with version.json (tools/check-release.mjs checks it)
+const VERSION = '1.5'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -51,6 +51,9 @@ const state = {
   current: null,        // ride being recorded
   network: null,        // last merge result
   focusRide: null,      // ride highlighted on the merge map
+  focusSeg: null,       // or the segment highlighted there
+  branches: [],         // branch names given in the app: [{ name, pts: [[lat, lon]] }], newest first
+  branchIndex: null,
   view: 'ride',
   goodAt: 0,            // when the last usable fix arrived (wall clock)
   fixAt: 0,
@@ -80,6 +83,53 @@ const stamp = () => {
 const rideName = (r) => r.name || 'Ride in progress';
 const doneRides = () => state.rides.filter((r) => r.status === 'done');
 const byName = (x) => x.by || 'Unknown';
+
+// ---- methods of travel -------------------------------------------------------
+
+/** The built-in methods plus any the user has added on this phone. */
+const allMethods = () => [...VEHICLES, ...(settings.customVehicles ?? [])];
+
+/**
+ * What a ride was made on. A ride carries its own copy of the name, width and
+ * kind, so it still reads correctly on a phone that does not have that method
+ * (after a backup is restored) or after the method is removed.
+ */
+function methodOf(ride) {
+  const known = allMethods().find((m) => m.key === ride?.vehicle);
+  if (known) return known;
+  if (ride?.vehicleName) {
+    return { key: ride.vehicle, name: ride.vehicleName, short: ride.vehicleName, width: ride.vehicleWidth ?? vehicleOf().width, kind: ride.vehicleKind ?? 'motor' };
+  }
+  return vehicleOf(ride?.vehicle);
+}
+const setMethod = (ride, m) => Object.assign(ride, { vehicle: m.key, vehicleName: m.name, vehicleWidth: m.width, vehicleKind: m.kind });
+
+/** "1.5", "150 cm", "60 in", "5 ft" -> metres (null if it makes no sense). A bare number over 4 is taken as inches. */
+function parseWidth(text) {
+  const m = /^\s*([\d.]+)\s*(m|cm|in|inch|inches|"|ft|feet|')?\s*$/i.exec(text.replace(',', '.'));
+  if (!m) return null;
+  let v = Number(m[1]);
+  const unit = (m[2] ?? '').toLowerCase();
+  if (!Number.isFinite(v) || v <= 0) return null;
+  if (unit === 'cm') v /= 100;
+  else if (unit.startsWith('in') || unit === '"') v *= 0.0254;
+  else if (unit.startsWith('f') || unit === "'") v *= 0.3048;
+  else if (!unit && v > 4) v *= 0.0254;
+  return v >= 0.2 && v <= 5 ? Math.round(v * 100) / 100 : null;
+}
+
+/** Distance, time and ride count for each method of travel, furthest first. */
+function totalsByMethod(rides) {
+  const by = new Map();
+  for (const r of rides) {
+    const name = methodOf(r).name;
+    const e = by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, time: 0 }).get(name);
+    e.rides++;
+    e.dist += r.dist ?? 0;
+    e.time += Math.max(0, (r.endedAt ?? 0) - (r.startedAt ?? 0));
+  }
+  return [...by.values()].sort((a, b) => b.dist - a.dist);
+}
 
 /** Quick labels for pins: the names typed most recently on this phone first, then the standard ones. */
 function pinLabels() {
@@ -241,6 +291,8 @@ async function loadAll() {
     } catch { /* none bundled, or offline on first run */ }
   }
   state.refIndex = prepareReference(state.ref);
+  state.branches = (await db.get('kv', 'branches')) ?? [];
+  state.branchIndex = branchIndexOf(state.branches);
 }
 
 // ---- map layers -------------------------------------------------------------
@@ -293,7 +345,7 @@ function updateStatus() {
   else if (tracker.state === 'paused') set('PAUSED', 'wait');
   else if (fix.acc > settings.maxAcc) set(rec ? `Weak GPS ±${Math.round(fix.acc)} m – not recording` : `Weak GPS ±${Math.round(fix.acc)} m`, 'bad');
   else if (rec && tracker.autoPaused) set('Stopped – auto-paused', 'wait');
-  else if (rec) set(`● RECORDING · ${vehicleOf(state.current?.vehicle).short}`, 'rec');
+  else if (rec) set(`● RECORDING · ${methodOf(state.current).short}`, 'rec');
   else set('GPS ready', 'ok');
 }
 
@@ -334,19 +386,70 @@ function startGps() {
 }
 
 /**
- * Ask what a ride is (or was) on. The one used last is the green button.
- * Resolves with the entry from VEHICLES, or null if cancelled.
+ * Ask what a ride is (or was) on. The one used last is the green button, and
+ * a new method can be added on the spot. Resolves with the method, or null if
+ * cancelled.
  */
 async function chooseVehicle(title, current) {
   const res = await ask({
     title,
     body: 'This sets how wide a strip each pass counts for, and tunes the GPS to your speed.',
     buttons: [
-      ...VEHICLES.map((v) => ({ label: v.name, value: v.key, cls: v.key === current ? 'go' : 'ghost' })),
+      ...allMethods().map((v) => ({ label: v.name, value: v.key, cls: v.key === current ? 'go' : 'ghost' })),
+      { label: '+ Add another…', value: 'add', cls: 'info' },
       { label: 'Cancel', value: 'cancel' },
     ],
   });
-  return VEHICLES.find((v) => v.key === res.button) ?? null;
+  if (res.button === 'add') return addMethod();
+  return allMethods().find((v) => v.key === res.button) ?? null;
+}
+
+/** Three quick questions (name, width, how it moves) to add a method of travel. Resolves with it, or null. */
+async function addMethod() {
+  const next = [{ label: 'NEXT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }];
+  const named = await ask({
+    title: 'New method of travel',
+    body: 'What is it called?',
+    input: { placeholder: 'e.g. Tractor, Horse, Snowmobile' },
+    buttons: next,
+  });
+  if (named.button !== 'save' || !named.text) return null;
+  const name = named.text.slice(0, 30);
+  const existing = allMethods().find((m) => m.name.toLowerCase() === name.toLowerCase());
+  if (existing) {
+    toast(`"${existing.name}" is already on the list.`);
+    return existing;
+  }
+  let width = null;
+  while (width == null) {
+    const res = await ask({
+      title: `How wide is ${name}?`,
+      body: 'In metres, or in inches like "60 in". Each pass counts as a strip this wide, centred on the phone.',
+      input: { placeholder: 'e.g. 1.5 or 60 in' },
+      chips: ['0.5 m', '0.8 m', '1.2 m', '1.5 m', '1.8 m', '2.2 m'],
+      buttons: next,
+    });
+    if (res.button !== 'save') return null;
+    width = parseWidth(res.text);
+    if (width == null) toast('Type a width such as 1.5 or 60 in.');
+  }
+  const moves = await ask({
+    title: `How does ${name} travel?`,
+    body: `${width.toFixed(2)} m wide. This last answer tunes the GPS for its speed.`,
+    buttons: [
+      { label: 'Engine or motor', value: 'motor', cls: 'go' },
+      { label: 'Pedal power (bike pace)', value: 'bike' },
+      { label: 'On foot (walking pace)', value: 'foot' },
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  if (moves.button === 'cancel') return null;
+  const method = { key: `c${Date.now()}`, name, short: name, width, kind: moves.button, basis: 'added on this phone' };
+  settings.customVehicles = [...(settings.customVehicles ?? []), method];
+  saveSettings();
+  renderSettings();
+  toast(`Added ${name}`);
+  return method;
 }
 
 let starting = false;
@@ -359,10 +462,10 @@ async function startRide() {
   if (!vehicle) return;
   settings.vehicle = vehicle.key;
   saveSettings();
-  const ride = {
-    id: Date.now(), name: '', by: settings.userName, vehicle: vehicle.key, vehicleWidth: vehicle.width,
+  const ride = setMethod({
+    id: Date.now(), name: '', by: settings.userName,
     startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0,
-  };
+  }, vehicle);
   await db.put('rides', ride);
   state.rides.push(ride);
   state.tracks.set(ride.id, []);
@@ -419,7 +522,7 @@ async function finishRide() {
     })
     : await ask({
       title: 'Save this ride',
-      body: `${fmtDist(tracker.dist)} · ${tracker.count} points · ${vehicleOf(ride.vehicle).name}. Give it a name, such as the trail or loop you covered.`,
+      body: `${fmtDist(tracker.dist)} · ${tracker.count} points · ${methodOf(ride).name}. Give it a name, such as the trail or loop you covered.`,
       input: { value: `Ride ${n}`, placeholder: 'e.g. Ride 1 - North Loop' },
       buttons: [
         { label: 'SAVE RIDE', value: 'save', cls: 'go' },
@@ -530,11 +633,23 @@ function renderRides() {
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
       <div><div class="name">${esc(r.name)}</div>
-        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(vehicleOf(r.vehicle).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
-      <div class="acts four"><button data-act="rename">Rename</button><button data-act="vehicle">Vehicle</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
+        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
+      <div class="acts four"><button data-act="rename">Rename</button><button data-act="vehicle">Method</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
   $('ride-empty').hidden = rides.length > 0;
+
+  // Every saved ride counts here, whether or not it is switched into the trail network.
+  const totals = totalsByMethod(rides);
+  if (totals.length > 1) {
+    totals.push(totals.reduce((a, t) => ({ ...a, rides: a.rides + t.rides, dist: a.dist + t.dist, time: a.time + t.time }),
+      { name: 'All travel', rides: 0, dist: 0, time: 0, all: true }));
+  }
+  $('totals').hidden = !rides.length;
+  $('totals-list').innerHTML = totals.map((t) => `
+    <li class="${t.all ? 'all' : ''}"><span class="dot" style="background:${t.all ? '#fff' : 'var(--live)'}"></span>
+      <span>${esc(t.name)} <span class="sub">${t.rides} ride${t.rides === 1 ? '' : 's'} · ${fmtDur(t.time)}</span></span>
+      <span class="pct">${fmtDist(t.dist)}</span></li>`).join('');
 
   $('pin-list').replaceChildren(...state.pins.map((p) => {
     const ride = state.rides.find((r) => r.id === p.ride);
@@ -561,10 +676,9 @@ $('ride-list').addEventListener('click', async (e) => {
     if (res.button !== 'save' || !res.text) return;
     ride.name = res.text;
   } else if (act === 'vehicle') {
-    const vehicle = await chooseVehicle(`What was "${ride.name}" on?`, vehicleOf(ride.vehicle).key);
+    const vehicle = await chooseVehicle(`What was "${ride.name}" on?`, methodOf(ride).key);
     if (!vehicle) return;
-    ride.vehicle = vehicle.key;
-    ride.vehicleWidth = vehicle.width;
+    setMethod(ride, vehicle);
   } else if (act === 'show') {
     state.focusRide = ride.id;
     showView('net');
@@ -612,11 +726,13 @@ function computeNetwork() {
     .filter((r) => r.include && state.tracks.get(r.id)?.length)
     .map((r) => ({
       id: r.id, name: rideName(r), by: byName(r), dist: r.dist, startedAt: r.startedAt, segments: state.tracks.get(r.id),
-      vehicle: vehicleOf(r.vehicle), vehicleWidth: r.vehicleWidth ?? vehicleOf(r.vehicle).width,
+      vehicle: methodOf(r), vehicleWidth: r.vehicleWidth ?? methodOf(r).width,
     }));
   const net = buildNetwork(tracks, settings);
-  nameSegments(net.segments, state.refIndex);
+  nameSegments(net.segments, state.refIndex);                 // names from the existing map -> s.ref
+  nameSegments(net.segments, state.branchIndex, 12, 'named'); // names given in this app -> s.named
   for (const s of net.segments) {
+    s.branch = s.named ?? s.ref ?? null;
     s.contributors = [...new Set(s.sources.map((i) => tracks[i].by))];
     // The trail is at least as wide as the widest thing that travelled it. A
     // ride that only touched the segment (crossing at a junction) does not count.
@@ -625,14 +741,101 @@ function computeNetwork() {
     const widest = through.map((i) => tracks[i]).reduce((a, b) => (b.vehicleWidth > a.vehicleWidth ? b : a));
     s.vehicles = [...new Set(through.map((i) => tracks[i].vehicle.name))];
     s.width = { ...estimateWidth(s.spread, widest.vehicleWidth), via: widest.vehicle.name };
-    const what = s.ref ?? (s.rides.length === 1 ? s.rides[0] : (state.refIndex ? 'New trail' : 'Trail'));
+    const what = s.branch ?? (s.rides.length === 1 ? s.rides[0] : 'New trail');
     s.name = `${what} · ${s.id}`;
   }
   net.tracks = tracks;
+  net.branches = branchesOf(net.segments);
   state.network = net;
   state.lastKml = null;
   $('btn-share').hidden = true;
 }
+
+// ---- the trail system and its branches -------------------------------------------
+//
+// The whole network is one trail system with a name. Inside it, each named
+// stretch is a branch; several segments can share a branch name. Branch names
+// come from the existing map where a segment follows one of its trails, or
+// from the user. A name the user gives is stored with the line it was given to,
+// so it finds its segment again however the network is re-merged later.
+
+/** A name for the whole system: the existing map's own name, without a trailing "System" or "Map". */
+function suggestSystemName() {
+  const fromMap = state.ref?.name?.replace(/\s+(trails?\s+)?(system|map|network)$/i, (m, trail) => (trail ? ' Trail' : '')).trim();
+  if (fromMap) return /trail/i.test(fromMap) ? fromMap : `${fromMap} Trail`;
+  return settings.userName ? `${settings.userName}'s Trail` : 'My Trail';
+}
+const systemName = () => settings.systemName || suggestSystemName();
+
+async function askSystemName() {
+  const suggestion = suggestSystemName();
+  const res = await ask({
+    title: 'Name of the trail system',
+    body: 'The whole network of trails. Each named stretch inside it is a branch.',
+    input: { value: systemName(), placeholder: 'e.g. MacGregor Estates Trail' },
+    chips: suggestion !== systemName() ? [suggestion] : [],
+    buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button !== 'save' || !res.text) return false;
+  settings.systemName = res.text.slice(0, 60);
+  saveSettings();
+  state.lastKml = null;
+  if (state.view === 'net') renderNetwork(false);
+  return true;
+}
+$('btn-sys').addEventListener('click', askSystemName);
+
+const branchIndexOf = (branches) => prepareReference({ lines: branches.map((b) => ({ name: b.name, parts: [b.pts], boundary: false })) });
+
+/** Segments grouped by branch name, longest first; segments with no name come last under `name: null`. */
+function branchesOf(segments) {
+  const by = new Map();
+  for (const s of segments) {
+    const e = by.get(s.branch) ?? by.set(s.branch, { name: s.branch, length: 0, segments: [], narrow: Infinity, wide: 0 }).get(s.branch);
+    e.length += s.length;
+    e.segments.push(s);
+    e.narrow = Math.min(e.narrow, s.width.width);
+    e.wide = Math.max(e.wide, s.width.width);
+  }
+  return [...by.values()].sort((a, b) => (a.name === null) - (b.name === null) || b.length - a.length);
+}
+
+async function nameBranch(seg) {
+  const known = [...new Set([
+    ...state.network.segments.map((s) => s.branch),
+    ...(state.ref?.lines.filter((l) => !l.boundary).map((l) => l.name) ?? []),
+  ].filter(Boolean))].sort();
+  const res = await ask({
+    title: 'Name this branch',
+    body: `${seg.id}, ${fmtDist(seg.length)} of ${systemName()}. Stretches given the same name are grouped as one branch.`,
+    input: { value: seg.branch ?? '', placeholder: 'e.g. Creek Loop' },
+    chips: known,
+    buttons: [
+      { label: 'SAVE', value: 'save', cls: 'go' },
+      ...(seg.named ? [{ label: 'Remove this name', value: 'clear', cls: 'stop' }] : []),
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  if (res.button === 'cancel' || (res.button === 'save' && !res.text)) return;
+  const pts = seg.points.map((p) => [p.lat, p.lon]);
+  // A new name replaces any earlier one given to (mostly) this same stretch.
+  state.branches = state.branches.filter((b) => overlapShare(b.pts, pts) < 0.6);
+  if (res.button === 'save') state.branches.unshift({ name: res.text.slice(0, 40), pts });
+  await db.put('kv', state.branches, 'branches');
+  state.branchIndex = branchIndexOf(state.branches);
+  state.network = null;
+  renderNetwork(false);
+}
+
+$('seg-list').addEventListener('click', (e) => {
+  const seg = state.network?.segments.find((s) => s.id === e.target.closest('li')?.dataset.seg);
+  if (!seg) return;
+  if (e.target.closest('[data-act=name]')) { nameBranch(seg); return; }
+  // Tapping a row shows that stretch on the map (tap again to go back to everything).
+  state.focusSeg = state.focusSeg === seg.id ? null : seg.id;
+  state.focusRide = null;
+  renderNetwork(true);
+});
 
 function renderNetwork(fit) {
   if (!state.network) computeNetwork();
@@ -647,9 +850,14 @@ function renderNetwork(fit) {
     ? net.tracks.flatMap((t) => t.segments.map((pts) => ({ pts, color: RAW_COLOR, width: 1.5 }))) : []);
   netMap.setLayer('merged', settings.showMerged
     ? net.segments.map((s) => ({ pts: s.points, color: css, width: 4, outline: true })) : []);
-  const focus = state.tracks.get(state.focusRide);
-  netMap.setLayer('focus', focus ? focus.map((pts) => ({ pts, color: '#ffffff', width: 2.5 })) : []);
+  const focusSeg = net.segments.find((s) => s.id === state.focusSeg);
+  const focus = focusSeg ? [focusSeg.points] : state.tracks.get(state.focusRide);
+  netMap.setLayer('focus', focus ? focus.map((pts) => ({ pts, color: '#ffffff', width: focusSeg ? 6 : 2.5, outline: !!focusSeg })) : []);
   netMap.setPins(state.pins);
+
+  $('sys-val').textContent = systemName();
+  $('sys-note').textContent = settings.systemName ? 'Used as the name of the Google Earth file and map.'
+    : (state.ref ? 'Suggested from your existing map. Tap Change if it is not right.' : 'Suggested name. Tap Change to set your own.');
 
   const st = net.stats;
   $('net-stats').innerHTML = `
@@ -665,12 +873,21 @@ function renderNetwork(fit) {
       <span>${esc(c.name)} <span class="sub">${fmtDist(c.length)}</span></span>
       <span class="pct ${c.pct >= 90 ? 'done' : ''}">${c.pct}%</span></li>`).join('');
 
+  const named = net.branches.filter((b) => b.name !== null);
+  $('branch-details').hidden = !net.segments.length;
+  $('branch-details').querySelector('summary').textContent = `Branches of ${systemName()} (${named.length})`;
+  $('branch-list').innerHTML = net.branches.map((b) => `
+    <li><span class="dot" style="background:${b.name === null ? '#555' : css}"></span>
+      <span>${b.name === null ? 'Not named yet' : esc(b.name)} <span class="sub">${b.segments.length} segment${b.segments.length === 1 ? '' : 's'} · ${
+  b.wide - b.narrow < 0.05 ? `${b.wide.toFixed(1)} m wide` : `${b.narrow.toFixed(1)} to ${b.wide.toFixed(1)} m wide`}</span></span>
+      <span class="pct">${fmtDist(b.length)}</span></li>`).join('');
+
   $('seg-details').hidden = !net.segments.length;
-  $('seg-details').querySelector('summary').textContent = `Trail segments in the network (${net.segments.length})`;
+  $('seg-details').querySelector('summary').textContent = `Trail segments (${net.segments.length})`;
   $('seg-list').innerHTML = net.segments.map((s) => `
-    <li><span class="dot" style="background:${css}"></span>
-      <span>${esc(s.name)} <span class="sub">${widthLabel(s.width)} · ridden ×${s.passes} · ${s.points.length} points · ${esc(s.contributors.join(', '))}</span></span>
-      <span class="pct">${fmtDist(s.length)}</span></li>`).join('');
+    <li class="tap ${s.id === state.focusSeg ? 'sel' : ''}" data-seg="${s.id}"><span class="dot" style="background:${s.id === state.focusSeg ? '#fff' : css}"></span>
+      <span>${esc(s.name)} <span class="sub">${fmtDist(s.length)} · ${widthLabel(s.width)} · ridden ×${s.passes} · ${esc(s.contributors.join(', '))}</span></span>
+      <button class="mini" data-act="name">Name</button></li>`).join('');
 
   const who = contributorsOf(net.tracks, state.pins);
   $('who-details').hidden = !who.length;
@@ -697,9 +914,13 @@ function remergeSoon() {
 
 function makeKml() {
   const net = state.network;
-  const name = `trail-network_${stamp()}.kml`;
+  const system = systemName();
+  const slug = system.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'trail-network';
+  const name = `${slug}_${stamp()}.kml`;
   const text = buildKml({
-    name: `Trail network ${new Date().toLocaleDateString()}`,
+    name: system,
+    branches: net.branches,
+    travel: totalsByMethod(state.rides.filter((r) => net.tracks.some((t) => t.id === r.id))),
     segments: net.segments,
     waypoints: state.pins.map((p) => ({ ...p, rideName: state.rides.find((r) => r.id === p.ride)?.name })),
     rides: net.tracks,
@@ -713,6 +934,8 @@ function makeKml() {
 $('btn-export').addEventListener('click', async () => {
   if (!state.network) computeNetwork(); // a ride was saved or changed since the last merge
   if (!state.network.segments.length) { toast('Nothing to export yet – record a ride first.'); return; }
+  // The first export settles what the trail system is called (the suggestion is filled in).
+  if (!settings.systemName && !(await askSystemName())) return;
   const kml = makeKml();
   if (await saveFile(kml.name, kml.text, kml.type) !== 'downloaded') return;
   state.lastKml = new File([kml.text], kml.name, { type: kml.type });
@@ -735,10 +958,11 @@ function renderSettings() {
   $('acc-val').textContent = `${settings.maxAcc} m`;
   $('mind').value = settings.minDist;
   $('mind-val').textContent = `${settings.minDist} m`;
-  $('veh-list').innerHTML = VEHICLES.map((v) => `
-    <li><span class="dot" style="background:${v.key === settings.vehicle ? 'var(--go)' : '#555'}"></span>
-      <span>${esc(v.name)} <span class="sub">${esc(v.basis)}</span></span>
-      <span class="pct">${v.width.toFixed(2)} m</span></li>`).join('');
+  const added = new Set((settings.customVehicles ?? []).map((v) => v.key));
+  $('veh-list').innerHTML = allMethods().map((v) => `
+    <li data-key="${esc(v.key)}"><span class="dot" style="background:${v.key === settings.vehicle ? 'var(--go)' : '#555'}"></span>
+      <span>${esc(v.name)} <span class="sub">${added.has(v.key) ? `${v.width.toFixed(2)} m wide · ` : ''}${esc(v.basis ?? '')}</span></span>
+      ${added.has(v.key) ? '<button class="mini del" data-act="remove">Remove</button>' : `<span class="pct">${v.width.toFixed(2)} m</span>`}</li>`).join('');
   $('autopause').checked = settings.autoPause;
   $('awake').checked = settings.keepAwake;
   $('show-raw').checked = settings.showRaw;
@@ -802,6 +1026,23 @@ async function askName(first) {
   if (res.button === 'save' && res.text) await setUserName(res.text.slice(0, 40));
 }
 $('btn-name').addEventListener('click', () => askName(false));
+
+$('btn-add-method').addEventListener('click', addMethod);
+$('veh-list').addEventListener('click', async (e) => {
+  if (!e.target.closest('[data-act=remove]')) return;
+  const method = (settings.customVehicles ?? []).find((v) => v.key === e.target.closest('li')?.dataset.key);
+  if (!method) return;
+  const res = await ask({
+    title: `Remove "${method.name}"?`,
+    body: 'It will no longer be offered when you start a ride. Rides already recorded with it keep it, and still count in the totals.',
+    buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'Remove', value: 'yes', cls: 'stop' }],
+  });
+  if (res.button !== 'yes') return;
+  settings.customVehicles = settings.customVehicles.filter((v) => v !== method);
+  if (settings.vehicle === method.key) settings.vehicle = 'grizzly';
+  saveSettings();
+  renderSettings();
+});
 
 // ---- staying up to date ---------------------------------------------------------
 //
@@ -931,6 +1172,7 @@ $('btn-backup').addEventListener('click', async () => {
     app: 'trail-tracker', format: 1, exportedAt: new Date().toISOString(), contributor: settings.userName, settings,
     rides: state.rides.map((r) => ({ ...r, points: (state.tracks.get(r.id) ?? []).flat() })),
     pins: state.pins,
+    branches: state.branches,
   };
   if (await saveFile(`trail-tracker-backup_${stamp()}.json`, JSON.stringify(data), 'application/json') === 'downloaded') {
     toast('Backup saved to Downloads');
@@ -956,6 +1198,13 @@ $('backup-file').addEventListener('change', async (e) => {
     for (const pin of data.pins ?? []) {
       if (!state.pins.some((p) => p.id === pin.id)) await db.put('pins', { ...pin, by: pin.by || from });
     }
+    // Branch names come across too, except where this phone has already named the same stretch.
+    const branches = state.branches.slice();
+    for (const b of data.branches ?? []) {
+      if (!b?.name || !Array.isArray(b.pts) || b.pts.length < 2) continue;
+      if (!branches.some((mine) => overlapShare(b.pts, mine.pts) >= 0.6)) branches.push({ name: b.name, pts: b.pts });
+    }
+    await db.put('kv', branches, 'branches');
     const current = state.current;
     await loadAll();
     if (current) state.current = state.rides.find((r) => r.id === current.id) ?? null;
@@ -1076,7 +1325,7 @@ async function boot() {
     $('demo-flag').hidden = false;
   }
   // The GPS filters are tuned to what the ride is on: a walker is slower than a machine.
-  const trackerSettings = () => ({ ...settings, kind: vehicleOf(state.current?.vehicle ?? settings.vehicle).kind });
+  const trackerSettings = () => ({ ...settings, kind: methodOf(state.current ?? { vehicle: settings.vehicle }).kind });
   tracker = new Tracker(trackerSettings, { fix: onFix, point: onPoint, status: updateRideUi }, geo);
 
   refreshRideMap();

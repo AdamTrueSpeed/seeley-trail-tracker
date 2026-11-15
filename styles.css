@@ -207,6 +207,8 @@ input[type=range] { width: 100%; height: 44px; margin: 2px 0; accent-color: var(
 .toggle select { min-height: 44px; padding: 0 10px; background: #000; border: 2px solid #fff; border-radius: 10px; font-weight: 700; }
 .toggle .mid { flex: none; }
 #name-val { color: var(--info); font-size: 20px; font-weight: 800; margin: 2px 0; }
+.toggle.sys { margin-bottom: 0; padding: 8px 14px; }
+.toggle.sys b { display: block; color: var(--info); font-size: 19px; overflow-wrap: anywhere; }
 .list .meta b { color: #fff; }
 
 details { background: var(--panel); border: 2px solid var(--line); border-radius: 14px; padding: 4px 14px; }
@@ -218,6 +220,14 @@ summary { font-weight: 800; padding: 10px 0; }
 .coverage .pct { font-variant-numeric: tabular-nums; color: var(--muted); }
 .coverage .pct.done { color: var(--go); }
 .coverage .sub { color: var(--muted); font-weight: 600; font-size: 13px; }
+.coverage.card { background: var(--panel); border: 2px solid var(--line); border-radius: 14px; padding: 2px 14px; }
+.coverage.card li:first-child { border-top: 0; }
+.coverage.card .pct { color: #fff; font-size: 17px; }
+.coverage li.all { font-size: 17px; border-top: 2px solid #fff; }
+.coverage li.tap { cursor: pointer; }
+.coverage li.sel { background: #1b2530; }
+.coverage button.mini { min-height: 40px; padding: 0 12px; border-radius: 10px; background: #000; border: 2px solid #fff; color: #fff; font-weight: 800; font-size: 14px; }
+.coverage button.mini.del { border-color: #7a2a14; color: #ff8a65; }
 
 .brand { display: flex; align-items: center; gap: 14px; margin: 10px 0 12px; }
 .brand img { border-radius: 14px; border: 2px solid var(--line); }

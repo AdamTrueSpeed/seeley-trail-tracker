@@ -69,10 +69,13 @@ export function prepareReference(ref) {
   return { proj, trails: out, grid };
 }
 
-/** Set seg.ref to the name of the existing trail each segment mostly follows (or null). */
-export function nameSegments(segments, prepared, maxDist = 20) {
+/**
+ * Set seg[field] to the name of the indexed trail each segment mostly follows
+ * (or null). When two trails tie, the one listed first wins.
+ */
+export function nameSegments(segments, prepared, maxDist = 20, field = 'ref') {
   for (const seg of segments) {
-    seg.ref = null;
+    seg[field] = null;
     if (!prepared) continue;
     const votes = new Map();
     let total = 0;
@@ -82,9 +85,24 @@ export function nameSegments(segments, prepared, maxDist = 20) {
       if (ti >= 0) votes.set(ti, (votes.get(ti) ?? 0) + 1);
     });
     let best = -1, bestN = 0;
-    for (const [ti, n] of votes) if (n > bestN) { bestN = n; best = ti; }
-    if (best >= 0 && bestN >= total * 0.5) seg.ref = prepared.trails[best].name;
+    for (const [ti, n] of votes) if (n > bestN || (n === bestN && ti < best)) { bestN = n; best = ti; }
+    if (best >= 0 && bestN >= total * 0.5) seg[field] = prepared.trails[best].name;
   }
+}
+
+/** Share (0 to 1) of line a that runs within maxDist metres of line b. Both are [[lat, lon]]. */
+export function overlapShare(a, b, maxDist = 12) {
+  if (!a.length || !b.length) return 0;
+  const proj = makeProjection(a[0][0], a[0][1]);
+  const xy = (pts) => pts.map(([lat, lon]) => [proj.x(lon), proj.y(lat)]);
+  const near = new PointGrid(maxDist);
+  along(xy(b), SAMPLE / 2, (x, y) => near.add(x, y, 1));
+  let n = 0, hit = 0;
+  along(xy(a), SAMPLE, (x, y) => {
+    n++;
+    if (near.nearest(x, y, maxDist) >= 0) hit++;
+  });
+  return n ? hit / n : 0;
 }
 
 /**

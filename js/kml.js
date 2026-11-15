@@ -15,11 +15,13 @@ export const TRAIL_COLORS = {
   yellow: { label: 'Yellow', css: '#ffee00', kml: 'ff00eeff' },
 };
 
-function segmentBalloon(s) {
+function segmentBalloon(s, system) {
   const alts = s.points.map((p) => p.alt).filter((a) => a != null);
   const rows = s.points.map((p, i) =>
     `<tr><td>${i + 1}</td><td>${num(p.lat, 6)}</td><td>${num(p.lon, 6)}</td><td>${p.alt == null ? '' : num(p.alt, 1)}</td></tr>`).join('');
   const facts = [
+    ['Trail system', esc(system)],
+    ['Branch', s.branch ? esc(s.branch) : 'not named yet'],
     ['Segment ID', s.id],
     ['Length', `${num(s.length, 0)} m`],
     ['Mapping points', s.points.length],
@@ -38,9 +40,45 @@ function segmentBalloon(s) {
     + `<table border="1" cellpadding="3" cellspacing="0"><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Elev m</th></tr>${rows}</table>`;
 }
 
+/** One trail segment as a KML placemark: the line, its balloon, and the same facts as data fields. */
+function segmentPlacemark(s, system) {
+  const data = (name, value) => `<Data name="${name}"><value>${esc(value)}</value></Data>`;
+  return [
+    '<Placemark>',
+    `<name>${esc(s.name ?? s.id)}</name>`,
+    `<description>${cdata(segmentBalloon(s, system))}</description>`,
+    '<ExtendedData>'
+      + data('trail_system', system)
+      + data('branch', s.branch ?? '')
+      + data('segment_id', s.id)
+      + data('length_m', num(s.length, 1))
+      + data('points', s.points.length)
+      + data('passes', s.passes)
+      + (s.width
+        ? data('width_m', num(s.width.width, 1))
+          + data('width_basis', s.width.basis)
+          + data('width_swept_m', num(s.width.swept, 1))
+          + data('width_passes', s.width.passes)
+          + data('gps_accuracy_m', s.width.acc == null ? '' : num(s.width.acc, 1))
+          + data('vehicle_width_m', num(s.width.vehicle, 2))
+          + data('vehicles', (s.vehicles ?? []).join('; '))
+        : '')
+      + data('existing_trail', s.ref ?? '')
+      + data('contributors', (s.contributors ?? []).join('; '))
+      + data('rides', s.rides.join('; '))
+      + '</ExtendedData>',
+    '<styleUrl>#trail</styleUrl>',
+    '<LineString><tessellate>1</tessellate><altitudeMode>clampToGround</altitudeMode>'
+      + `<coordinates>${s.points.map(coord).join(' ')}</coordinates></LineString>`,
+    '</Placemark>',
+  ].join('\n');
+}
+
 /**
- * @param o.name      document name
- * @param o.segments  merged network from buildNetwork (optionally with .name / .ref / .contributors)
+ * @param o.name      name of the trail system (becomes the document name)
+ * @param o.branches  [{ name (null = not named yet), length, segments }] the segments grouped by branch
+ * @param o.travel    [{ name, rides, dist }] distance covered by each method of travel
+ * @param o.segments  merged network from buildNetwork (optionally with .name / .ref / .branch / .contributors)
  * @param o.waypoints [{ name, by, lat, lon, alt, t, rideName }]
  * @param o.rides     [{ name, by, vehicle: { name }, startedAt, segments: [[{lat, lon, alt}]] }] raw tracks (hidden folder)
  * @param o.contributors [{ name, rides, dist, pins }] who recorded what
@@ -52,13 +90,18 @@ export function buildKml(o) {
   const total = o.segments.reduce((d, s) => d + s.length, 0);
   const who = (o.contributors ?? []).map((c) =>
     `${c.name} (${c.rides} ride${c.rides === 1 ? '' : 's'}, ${num(c.dist / 1000, 2)} km, ${c.pins} pin${c.pins === 1 ? '' : 's'})`);
+  const travel = (o.travel ?? []).map((t) => `${t.name} ${num(t.dist / 1000, 2)} km (${t.rides} ride${t.rides === 1 ? '' : 's'})`);
+  const groups = o.branches ?? [{ name: null, length: total, segments: o.segments }];
+  const namedBranches = groups.filter((b) => b.name !== null).length;
   const out = [];
   out.push('<?xml version="1.0" encoding="UTF-8"?>');
   out.push('<kml xmlns="http://www.opengis.net/kml/2.2">');
   out.push('<Document>');
   out.push(`<name>${esc(o.name)}</name>`);
   out.push(`<description>${esc(
-    `GPS-surveyed trail network: ${o.segments.length} segments, ${num(total, 0)} m, from ${o.rides.length} ride(s). `
+    `${o.name}: GPS-surveyed trail system with ${namedBranches} named branch${namedBranches === 1 ? '' : 'es'}, `
+    + `${o.segments.length} segments, ${num(total, 0)} m, from ${o.rides.length} ride(s). `
+    + (travel.length ? `Distance travelled: ${travel.join('; ')}. ` : '')
     + (who.length ? `Contributors: ${who.join('; ')}. ` : '')
     + `Overlapping passes merged within ${o.settings.threshold} m; smoothing ${o.settings.smoothing}. `
     + 'Trail widths are rough estimates: the width of the widest thing known to have travelled each segment, with the phone on its centre line, plus any spread between passes that GPS error does not explain. '
@@ -68,33 +111,14 @@ export function buildKml(o) {
   out.push('<Style id="pin"><IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/ylw-pushpin.png</href></Icon>'
     + '<hotSpot x="20" y="2" xunits="pixels" yunits="pixels"/></IconStyle></Style>');
 
-  out.push('<Folder><name>Trail network (merged)</name><open>1</open>');
-  for (const s of o.segments) {
-    out.push('<Placemark>');
-    out.push(`<name>${esc(s.name ?? s.id)}</name>`);
-    out.push(`<description>${cdata(segmentBalloon(s))}</description>`);
-    out.push('<ExtendedData>'
-      + `<Data name="segment_id"><value>${esc(s.id)}</value></Data>`
-      + `<Data name="length_m"><value>${num(s.length, 1)}</value></Data>`
-      + `<Data name="points"><value>${s.points.length}</value></Data>`
-      + `<Data name="passes"><value>${s.passes}</value></Data>`
-      + (s.width
-        ? `<Data name="width_m"><value>${num(s.width.width, 1)}</value></Data>`
-          + `<Data name="width_basis"><value>${esc(s.width.basis)}</value></Data>`
-          + `<Data name="width_swept_m"><value>${num(s.width.swept, 1)}</value></Data>`
-          + `<Data name="width_passes"><value>${s.width.passes}</value></Data>`
-          + `<Data name="gps_accuracy_m"><value>${s.width.acc == null ? '' : num(s.width.acc, 1)}</value></Data>`
-          + `<Data name="vehicle_width_m"><value>${num(s.width.vehicle, 2)}</value></Data>`
-          + `<Data name="vehicles"><value>${esc((s.vehicles ?? []).join('; '))}</value></Data>`
-        : '')
-      + `<Data name="existing_trail"><value>${esc(s.ref ?? '')}</value></Data>`
-      + `<Data name="contributors"><value>${esc((s.contributors ?? []).join('; '))}</value></Data>`
-      + `<Data name="rides"><value>${esc(s.rides.join('; '))}</value></Data>`
-      + '</ExtendedData>');
-    out.push('<styleUrl>#trail</styleUrl>');
-    out.push('<LineString><tessellate>1</tessellate><altitudeMode>clampToGround</altitudeMode>'
-      + `<coordinates>${s.points.map(coord).join(' ')}</coordinates></LineString>`);
-    out.push('</Placemark>');
+  // One folder per branch, so Google Earth lists the system as: system > Branches > branch > its segments.
+  out.push('<Folder><name>Branches</name><open>1</open>');
+  for (const b of groups) {
+    out.push(`<Folder><name>${esc(b.name ?? 'Not named yet')}</name>`
+      + `<description>${esc(`${b.name === null ? 'Stretches with no branch name yet' : 'Branch'} of ${o.name}: `
+        + `${b.segments.length} segment${b.segments.length === 1 ? '' : 's'}, ${num(b.length, 0)} m.`)}</description>`);
+    for (const s of b.segments) out.push(segmentPlacemark(s, o.name));
+    out.push('</Folder>');
   }
   out.push('</Folder>');
 

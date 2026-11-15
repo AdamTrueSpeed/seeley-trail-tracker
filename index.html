@@ -58,6 +58,10 @@
 
   <!-- ===== Saved rides ===== -->
   <section class="view page" id="view-rides" hidden>
+    <div id="totals" hidden>
+      <h1>Distance travelled</h1>
+      <ul id="totals-list" class="coverage card"></ul>
+    </div>
     <h1>Saved rides</h1>
     <p class="hint">Switch a ride off to leave it out of the trail network.</p>
     <ul id="ride-list" class="list"></ul>
@@ -83,6 +87,7 @@
         <label><input type="checkbox" id="show-merged"><span class="key merged" id="key-merged"></span>Merged</label>
         <label id="show-ref-wrap"><input type="checkbox" id="show-ref"><span class="key ref"></span>Old map</label>
       </div>
+      <div class="toggle sys"><span><small>Trail system</small><b id="sys-val"></b><small id="sys-note"></small></span><button id="btn-sys" class="mid ghost">Change</button></div>
       <div id="net-stats" class="netstats"></div>
       <div class="slider">
         <div class="row"><span>Merge distance</span><b id="thr-val"></b></div>
@@ -100,9 +105,15 @@
         <summary>Old-map trails ridden so far</summary>
         <ul id="coverage-list" class="coverage"></ul>
       </details>
+      <details id="branch-details" hidden>
+        <summary>Branches</summary>
+        <ul id="branch-list" class="coverage"></ul>
+        <p class="hint">A branch is a named trail within the system. Names come from your existing map where a stretch follows one of its trails. To name or rename a stretch, open Trail segments below and tap its <b>Name</b> button.</p>
+      </details>
       <details id="seg-details" hidden>
-        <summary>Trail segments in the network</summary>
+        <summary>Trail segments</summary>
         <ul id="seg-list" class="coverage"></ul>
+        <p class="hint">Tap a segment to see it on the map; tap <b>Name</b> to give it a branch name. Segments with the same name make up one branch.</p>
         <p class="hint">Width is a rough guide: the width of the widest thing that has travelled the segment, plus how far apart the passes ran once GPS error is allowed for. A phone's GPS is only good to a few metres, so an ordinary trail shows as that width alone ("GPS-limited") and only wide stretches read wider. More passes make it firmer.</p>
       </details>
       <details id="who-details" hidden>
@@ -131,12 +142,10 @@
     <label class="toggle"><span>Pause automatically when stopped<small>No pile of dots while you wait at a junction.</small></span><input type="checkbox" id="autopause"></label>
     <label class="toggle"><span>Keep the screen on while riding<small>Needed: the phone stops giving GPS to the app when the screen turns off.</small></span><input type="checkbox" id="awake"></label>
 
-    <h1>Trail width</h1>
-    <p class="hint">You pick what you are on each time you press START RIDE. Each pass counts as a strip this wide, centred on the phone. To change it for a saved ride, use its <b>Vehicle</b> button under Saved rides.</p>
-    <details open>
-      <summary>Widths used</summary>
-      <ul id="veh-list" class="coverage"></ul>
-    </details>
+    <h1>Methods of travel</h1>
+    <p class="hint">You pick one each time you press START RIDE. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Saved rides. To change it for a saved ride, use its <b>Method</b> button.</p>
+    <ul id="veh-list" class="coverage card"></ul>
+    <div class="btnrow"><button id="btn-add-method" class="mid">Add a method of travel</button></div>
 
     <h1>Existing trail map</h1>
     <p id="ref-info" class="hint"></p>
