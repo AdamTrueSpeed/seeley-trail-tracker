@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="application-name" content="Seeley Trail Tracker">
+  <title>Seeley Trail Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main id="app">
+
+  <!-- ===== Ride ===== -->
+  <section class="view" id="view-ride">
+    <button id="btn-install-top" class="installbar" hidden>TAP HERE TO INSTALL THIS APP ON YOUR PHONE</button>
+    <div class="stats">
+      <div class="stat"><b id="st-speed">0</b><i>km/h</i></div>
+      <div class="stat"><b id="st-dist">0.00</b><i>km ridden</i></div>
+      <div class="stat"><b id="st-acc">--</b><i>GPS &plusmn; m</i></div>
+      <div class="stat"><b id="st-pts">0</b><i>points</i></div>
+    </div>
+    <div class="mapwrap">
+      <canvas id="map-ride" class="map"></canvas>
+      <div id="status" class="status wait">Starting…</div>
+      <div id="demo-flag" class="status demo" hidden>DEMO – simulated GPS</div>
+      <div class="mapbtns">
+        <button id="ride-in" aria-label="Zoom in">+</button>
+        <button id="ride-out" aria-label="Zoom out">&minus;</button>
+        <button id="ride-center" aria-label="Centre on me" class="on">&#9678;</button>
+        <button id="ride-fit" aria-label="Show everything">&#10530;</button>
+      </div>
+      <div id="notice" class="notice" hidden></div>
+    </div>
+    <div class="actions" id="actions-idle">
+      <button id="btn-start" class="big go">START RIDE</button>
+      <button id="btn-pin-idle" class="big info">DROP PIN</button>
+    </div>
+    <div class="actions rec" id="actions-rec" hidden>
+      <button id="btn-pause" class="big warn">PAUSE</button>
+      <button id="btn-pin" class="big info">DROP PIN</button>
+      <button id="btn-finish" class="big stop wide">FINISH &amp; SAVE</button>
+    </div>
+  </section>
+
+  <!-- ===== Saved rides ===== -->
+  <section class="view page" id="view-rides" hidden>
+    <h1>Saved rides</h1>
+    <p class="hint">Switch a ride off to leave it out of the trail network.</p>
+    <ul id="ride-list" class="list"></ul>
+    <p id="ride-empty" class="empty">No rides yet. Go to <b>Ride</b> and press START RIDE.</p>
+    <h1>Waypoints</h1>
+    <ul id="pin-list" class="list"></ul>
+    <p id="pin-empty" class="empty">No pins dropped yet.</p>
+  </section>
+
+  <!-- ===== Merge & export ===== -->
+  <section class="view" id="view-net" hidden>
+    <div class="mapwrap short">
+      <canvas id="map-net" class="map"></canvas>
+      <div class="mapbtns">
+        <button id="net-in" aria-label="Zoom in">+</button>
+        <button id="net-out" aria-label="Zoom out">&minus;</button>
+        <button id="net-fit" aria-label="Show everything">&#10530;</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="layers">
+        <label><input type="checkbox" id="show-raw"><span class="key raw"></span>Raw GPS</label>
+        <label><input type="checkbox" id="show-merged"><span class="key merged" id="key-merged"></span>Merged</label>
+        <label id="show-ref-wrap"><input type="checkbox" id="show-ref"><span class="key ref"></span>Old map</label>
+      </div>
+      <div id="net-stats" class="netstats"></div>
+      <div class="slider">
+        <div class="row"><span>Merge distance</span><b id="thr-val"></b></div>
+        <input type="range" id="thr" min="3" max="20" step="1">
+        <small>Tracks closer together than this become one trail. Raise it if you still see double lines; lower it if two separate trails are being joined.</small>
+      </div>
+      <div class="slider">
+        <div class="row"><span>Smoothing</span><b id="smo-val"></b></div>
+        <input type="range" id="smo" min="0" max="10" step="1">
+        <small>Higher irons out GPS wobble and uses fewer points; lower keeps every bend.</small>
+      </div>
+      <button id="btn-export" class="big go">EXPORT TO GOOGLE EARTH (.KML)</button>
+      <button id="btn-share" class="big ghost" hidden>SHARE THE FILE…</button>
+      <details id="coverage" hidden>
+        <summary>Old-map trails ridden so far</summary>
+        <ul id="coverage-list" class="coverage"></ul>
+      </details>
+      <details id="seg-details" hidden>
+        <summary>Trail segments in the network</summary>
+        <ul id="seg-list" class="coverage"></ul>
+      </details>
+    </div>
+  </section>
+
+  <!-- ===== Settings ===== -->
+  <section class="view page" id="view-settings" hidden>
+    <h1>GPS recording</h1>
+    <div class="slider">
+      <div class="row"><span>Ignore fixes worse than</span><b id="acc-val"></b></div>
+      <input type="range" id="acc" min="5" max="30" step="1">
+      <small>GPS readings less accurate than this are thrown away. 15 m is a good start; under heavy tree cover you may need 20.</small>
+    </div>
+    <div class="slider">
+      <div class="row"><span>Record a point every</span><b id="mind-val"></b></div>
+      <input type="range" id="mind" min="1" max="10" step="1">
+      <small>Minimum distance moved before the next point is saved.</small>
+    </div>
+    <label class="toggle"><span>Pause automatically when stopped<small>No pile of dots while you wait at a junction.</small></span><input type="checkbox" id="autopause"></label>
+    <label class="toggle"><span>Keep the screen on while riding<small>Needed: the phone stops giving GPS to the app when the screen turns off.</small></span><input type="checkbox" id="awake"></label>
+
+    <h1>Existing trail map</h1>
+    <p id="ref-info" class="hint"></p>
+    <div class="btnrow">
+      <button id="btn-ref-load" class="mid">Load a KML / KMZ…</button>
+      <button id="btn-ref-clear" class="mid ghost">Remove</button>
+    </div>
+    <input type="file" id="ref-file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden>
+
+    <h1>Google Earth export</h1>
+    <label class="toggle"><span>Trail colour</span><select id="color"></select></label>
+
+    <h1>Backup</h1>
+    <p class="hint" id="storage-info"></p>
+    <div class="btnrow">
+      <button id="btn-backup" class="mid">Save a backup file</button>
+      <button id="btn-restore" class="mid ghost">Restore…</button>
+    </div>
+    <input type="file" id="backup-file" accept=".json,application/json" hidden>
+
+    <h1>App</h1>
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" width="64" height="64">
+      <div><b>Seeley Trail Tracker</b><span id="version"></span></div>
+    </div>
+    <button id="btn-install" class="mid" hidden>Install on this phone</button>
+    <ul class="tips">
+      <li>Keep this app open and the screen on while riding. Android stops GPS for web apps when the screen is off or another app is in front.</li>
+      <li>Wait for the GPS number at the top to turn green before you set off.</li>
+      <li>Everything is stored on this phone only. Save a backup file now and then.</li>
+    </ul>
+  </section>
+</main>
+
+<nav class="tabs" id="tabs">
+  <button data-view="ride" class="active">Ride</button>
+  <button data-view="rides">Saved rides</button>
+  <button data-view="net">Merge &amp; export</button>
+  <button data-view="settings">Settings</button>
+</nav>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h2 id="dlg-title"></h2>
+    <p id="dlg-body"></p>
+    <div id="dlg-chips" class="chips"></div>
+    <input id="dlg-input" type="text" autocomplete="off" enterkeyhint="done">
+    <div id="dlg-btns" class="dlg-btns"></div>
+  </form>
+</dialog>
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

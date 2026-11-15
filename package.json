@@ -1,0 +1,9 @@
+{
+  "name": "trail-tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "test": "node tools/test-merge.mjs"
+  }
+}
