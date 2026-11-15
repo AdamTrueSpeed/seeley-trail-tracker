@@ -6,6 +6,7 @@ import { StepDetector, stepsFromDistance, metFor, kcalFor, kcalOfRide, effortOf,
 import { natureHunt, placesHunt, placesReached, hintFor, foundCount, isComplete, encodeHunt, decodeHunt, NATURE_ITEMS, REACH } from '../js/hunt.js';
 import { newCode, cleanCode, formatCode, channel, seal, unseal, Relay } from '../js/share.js';
 import { indexConditions, conditionsAlong, conditionText } from '../js/reference.js';
+import { newTransferCode, cleanTransferCode, pack, unpack, sendPackage, receivePackage } from '../js/transfer.js';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -180,6 +181,73 @@ function walk({ seconds, stepsPerSecond, swing, noise = 0.25, hz = 60, seed = 3 
   for (let i = 0; i < stream.length; i += 7) relay._feed(stream.subarray(i, i + 7)); // drip-fed 7 bytes at a time
   check('relay: three packets split across many frames are all read',
     got.length === 3 && got[0].join() === 't/one,first' && got[1].join() === 't/two,second' && got[2][0] === 't/long' && got[2][1] === long);
+}
+
+// ---- sending rides to the map computer: phone and computer joined by a pretend relay ----------------
+{
+  // Everything published on a hub reaches the others listening on that channel, unless `drop` says no.
+  const hub = (drop = () => false) => {
+    const h = { members: new Set(), count: 0 };
+    h.make = (url, onPacket, onChange) => {
+      const r = {
+        up: false, topics: new Set(),
+        open() { r.up = true; h.members.add(r); onChange(); },
+        close() { r.up = false; h.members.delete(r); },
+        listen(topics) { r.topics = new Set(topics); },
+        publish(topic, payload) {
+          if (drop(++h.count)) return;
+          const copy = payload.slice();
+          for (const m of h.members) if (m !== r && m.topics.has(topic)) setTimeout(() => onPacketOf.get(m)(topic, copy), 0);
+        },
+      };
+      onPacketOf.set(r, onPacket);
+      return r;
+    };
+    return h;
+  };
+  const onPacketOf = new Map();
+  const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+  const code = newTransferCode();
+  check('send: a code is 26 safe characters', /^[A-HJ-KM-NP-TV-Z2-9]{26}$/.test(code), code.length);
+  check('send: the code is read out of a link', cleanTransferCode(`https://example.test/app/#map=${code}`) === code);
+  check('send: a code typed with dashes and small letters still reads', cleanTransferCode(code.toLowerCase().replace(/(.{5})/g, '$1-')) === code);
+  check('send: nonsense is not a code', cleanTransferCode('hello') === null && cleanTransferCode('') === null);
+
+  // Something like real rides: mostly repetitive, so it squeezes well.
+  const rides = { app: 'trail-tracker', rides: [{ id: 1, dist: 1234, points: Array.from({ length: 4000 }, (_, i) => ({ seg: 0, lat: 44.9 + i * 1e-5, lon: -75.8 - i * 2e-5, alt: 110, t: 1e12 + i * 1000, acc: 5 + (i * 7919) % 6 })) }], pins: [{ name: 'House' }] };
+  const bytes = new TextEncoder().encode(JSON.stringify(rides));
+  const squeezed = await pack(bytes);
+  check('send: the data is squeezed before it goes', squeezed.gz && squeezed.bytes.length < bytes.length / 3, `${bytes.length} -> ${squeezed.bytes.length} bytes`);
+  check('send: and comes back the same', same(await unpack(squeezed.bytes, squeezed.gz), bytes));
+
+  const summarize = (b) => ({ rides: JSON.parse(new TextDecoder().decode(b)).rides.length });
+  const run = async (h, sendCode, listenCode, data = bytes) => {
+    const opts = { relays: ['one', 'two'], makeRelay: h.make };
+    const listening = receivePackage(listenCode, { ...opts, summarize, waitMs: 20000 }).catch((err) => err);
+    let progress = 0;
+    const sent = await sendPackage(sendCode, data, { ...opts, patience: 0.05, onProgress: (p) => { progress = p; } }).catch((err) => err);
+    if (sent instanceof Error) for (const m of [...h.members]) m.close();
+    return { sent, progress, got: sent instanceof Error ? null : await listening };
+  };
+
+  const clean = await run(hub(), code, code);
+  check('send: rides arrive whole', !!clean.got && same(clean.got.bytes, bytes));
+  check('send: the phone hears what was received', clean.sent?.rides === 1 && clean.progress === 1);
+
+  // Random bytes do not squeeze, so this one goes in many pieces; every fifth packet is lost on the way.
+  const noisy = crypto.getRandomValues(new Uint8Array(60000));
+  const lossyHub = hub((n) => n % 5 === 0);
+  const lossy = await (async () => {
+    const opts = { relays: ['one'], makeRelay: lossyHub.make };
+    const listening = receivePackage(code, { ...opts, waitMs: 60000 });
+    await sendPackage(code, noisy, { ...opts, patience: 0.3 });
+    return listening;
+  })().catch((err) => err);
+  check('send: lost pieces are asked for again', !(lossy instanceof Error) && same(lossy.bytes, noisy), lossy instanceof Error ? lossy.message : `${lossyHub.count} packets`);
+
+  const nobody = await run(hub(), code, newTransferCode());
+  check('send: the wrong code reaches nobody', nobody.sent instanceof Error && nobody.sent.message === 'nobody', String(nobody.sent?.message));
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');

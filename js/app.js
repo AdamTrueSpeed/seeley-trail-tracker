@@ -11,9 +11,10 @@ import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
 import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf, movingTimeOf, STOP_GAP } from './activity.js';
 import { natureHunt, placesHunt, photoItem, placesReached, hintFor, foundCount, isComplete, encodeHunt, decodeHunt, REACH, NATURE_ITEMS } from './hunt.js';
+import { sendPackage, cleanTransferCode } from './transfer.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.12';
+const VERSION = '1.13';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -2055,6 +2056,74 @@ $('hunt-body').addEventListener('click', async (e) => {
 });
 $('hunt-pill').addEventListener('click', () => showView('hunt'));
 
+// ---- sending rides to the owner's map ---------------------------------------------------
+//
+// See transfer.js. The computer that keeps the trail map listens with a
+// one-time code, which reaches this phone in a link (…#map=CODE). Nothing is
+// sent until the user says so here.
+
+let sendingMap = false;
+
+/** What the map needs: every saved ride with its points, the pins (without pictures) and the branch names. */
+const mapPackage = () => ({
+  app: 'trail-tracker', format: 1, kind: 'rides-for-map', version: VERSION, sentAt: new Date().toISOString(),
+  contributor: settings.userName, system: systemName(),
+  rides: doneRides().map((r) => ({ ...r, points: (state.tracks.get(r.id) ?? []).flat() })),
+  pins: state.pins.map(({ thumb, ...pin }) => pin),
+  branches: state.branches,
+});
+
+async function sendToMap(code = localStorage.getItem('tt-map-code')) {
+  if (sendingMap) return;
+  const rides = doneRides();
+  if (!rides.length) {
+    toast('There are no saved rides to send yet.');
+    return;
+  }
+  if (!code) {
+    const res = await ask({
+      title: 'Send rides to my map',
+      body: 'Paste the send link from the computer that keeps your trail map.',
+      input: { placeholder: 'Paste the link here' },
+      buttons: [{ label: 'NEXT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (res.button !== 'save') return;
+    code = cleanTransferCode(res.text);
+    if (!code) {
+      toast('That is not a send link. Ask for a new one.', 5000);
+      return;
+    }
+  }
+  localStorage.setItem('tt-map-code', code);
+  const res = await ask({
+    title: 'Send your rides to your map?',
+    body: `${rides.length} ride${rides.length === 1 ? '' : 's'} (${fmtDist(rides.reduce((d, r) => d + (r.dist ?? 0), 0))}) and ${state.pins.length} pin${state.pins.length === 1 ? '' : 's'} go to the computer that keeps your trail map. They are scrambled on this phone and pass through a public relay service on the internet. Photos stay on this phone.`,
+    buttons: [{ label: 'SEND', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button !== 'save') return;
+  sendingMap = true;
+  toast('Sending… 0%', 600000);
+  let failure = null;
+  try {
+    const got = await sendPackage(code, new TextEncoder().encode(JSON.stringify(mapPackage())), {
+      onProgress: (p) => toast(`Sending… ${Math.round(p * 100)}%`, 600000),
+    });
+    toast(`Received by your map computer: ${got.rides ?? rides.length} ride(s), ${(got.points ?? 0).toLocaleString()} GPS points, ${got.pins ?? 0} pin(s).`, 10000);
+  } catch (err) {
+    failure = {
+      offline: 'The relay could not be reached. Check that you have a signal, then try again.',
+      nobody: 'Your map computer is not listening for this link any more. Ask for a new send link, then tap it.',
+    }[err.message] ?? 'The send started but did not finish. Try again where the signal is better.';
+  } finally {
+    sendingMap = false;
+  }
+  if (!failure) return;
+  toast('Not sent', 1500);
+  const again = await ask({ title: 'Not sent', body: failure, buttons: [{ label: 'TRY AGAIN', value: 'save', cls: 'go' }, { label: 'Close', value: 'cancel' }] });
+  if (again.button === 'save') await sendToMap(code);
+}
+$('btn-send-map').addEventListener('click', () => sendToMap());
+
 // ---- staying up to date ---------------------------------------------------------
 //
 // version.json on the website says which version is published and which files
@@ -2092,7 +2161,7 @@ async function checkForUpdate(manual = false) {
     setUpdate('stuck');
     return;
   }
-  if (state.current || $('dlg').open) {
+  if (state.current || $('dlg').open || sendingMap) {
     setUpdate('waiting');
     return;
   }
@@ -2107,7 +2176,7 @@ async function checkForUpdate(manual = false) {
     setUpdate('offline');
     return;
   }
-  if (state.current || $('dlg').open) { // something started while the files were coming down
+  if (state.current || $('dlg').open || sendingMap) { // something started while the files were coming down
     setUpdate('waiting');
     return;
   }
@@ -2522,10 +2591,14 @@ async function boot() {
 /** Opened from a friend's "add me" link (…#friend=CODE) or a hunt link (…#hunt=CODE)? Offer to add them, or open the hunt. */
 async function checkInvite() {
   const hash = location.hash;
-  const invite = /[#&]friend=([^&]+)/.exec(hash), hunt = /[#&]hunt=/.test(hash);
-  if ((!invite && !hunt) || $('dlg').open) return;
+  const invite = /[#&]friend=([^&]+)/.exec(hash), hunt = /[#&]hunt=/.test(hash), map = /[#&]map=/.test(hash);
+  if ((!invite && !hunt && !map) || $('dlg').open) return;
   history.replaceState(null, '', location.pathname + location.search);
-  if (hunt) await joinHunt(hash);
+  if (map) {
+    const code = cleanTransferCode(hash);
+    if (code) await sendToMap(code);
+    else toast('That send link is not complete. Ask for a new one.', 5000);
+  } else if (hunt) await joinHunt(hash);
   else await addFriend(decodeURIComponent(invite[1]));
 }
 

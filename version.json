@@ -1,5 +1,5 @@
 {
-  "version": "1.12",
+  "version": "1.13",
   "files": [
     "./",
     "index.html",
@@ -17,6 +17,7 @@
     "js/reference.js",
     "js/share.js",
     "js/tracker.js",
+    "js/transfer.js",
     "js/width.js",
     "icons/icon-180.png",
     "icons/icon-192.png",
