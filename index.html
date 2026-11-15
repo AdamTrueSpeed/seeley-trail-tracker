@@ -59,7 +59,8 @@
       <button id="btn-pause" class="big warn">PAUSE</button>
       <button id="btn-pin" class="big info">DROP PIN</button>
       <button id="btn-photo" class="big info">PHOTO</button>
-      <button id="btn-finish" class="big stop wide">FINISH &amp; SAVE</button>
+      <button id="btn-dark" class="big ghost">DARK SCREEN</button>
+      <button id="btn-finish" class="big stop two">FINISH &amp; SAVE</button>
     </div>
     <!-- Opens the phone's own camera; the picture comes back to the app. -->
     <input type="file" id="photo-input" accept="image/*" capture="environment" hidden>
@@ -192,6 +193,15 @@
     </div>
     <label class="toggle"><span>Pause automatically when stopped<small>No pile of dots while you wait at a junction.</small></span><input type="checkbox" id="autopause"></label>
     <label class="toggle"><span>Keep the screen on while riding<small>Needed: the phone stops giving GPS to the app when the screen turns off.</small></span><input type="checkbox" id="awake"></label>
+    <label class="toggle"><span>Go dark by itself while recording<small>After this long without a touch the screen goes black and locks, but GPS keeps recording. Slide to wake it.</small></span>
+      <select id="autodark">
+        <option value="0">Never</option>
+        <option value="30">30 seconds</option>
+        <option value="60">1 minute</option>
+        <option value="180">3 minutes</option>
+        <option value="600">10 minutes</option>
+      </select>
+    </label>
 
     <h1>Methods of travel</h1>
     <p class="hint">You pick one each time you press START RIDE. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Saved rides. To change it for a saved ride, use its <b>Method</b> button.</p>
@@ -227,7 +237,7 @@
       <button id="btn-install" class="mid" hidden>Install on this phone</button>
     </div>
     <ul class="tips">
-      <li>Keep this app open and the screen on while riding. Phones stop giving GPS to web apps when the screen is off or another app is in front.</li>
+      <li>Never press the power button during a ride: phones stop giving GPS to web apps the moment the screen is really off, or another app is in front. Use DARK SCREEN instead: it looks off and is safe in a pocket, but keeps recording.</li>
       <li id="tip-ios" hidden>iPhone: if GPS shows as blocked or stays weak, open the iPhone's Settings &gt; Privacy &amp; Security &gt; Location Services &gt; Safari Websites, choose While Using the App and turn on Precise Location. If the screen still dims during a ride, set Display &amp; Brightness &gt; Auto-Lock to Never while riding.</li>
       <li>Wait for the GPS number at the top to turn green before you set off.</li>
       <li>Everything is stored on this phone only. Save a backup file now and then.</li>
@@ -255,6 +265,16 @@
   </form>
 </dialog>
 <div id="toast" class="toast" hidden></div>
+
+<!-- Dark screen: the display stays on (so GPS keeps coming) but shows black and
+     ignores touches, so the phone can go in a pocket. Slide to get the screen back. -->
+<div id="pocket" class="pocket" hidden>
+  <div class="pocket-info"><b id="pocket-state">RECORDING</b><span id="pocket-stats"></span></div>
+  <div class="slide" id="pocket-slide">
+    <div class="knob" id="pocket-knob">&#9654;</div>
+    <span>slide to wake the screen</span>
+  </div>
+</div>
 
 <!-- Only this shows on paper when "Print a QR poster" is used. -->
 <section id="poster">

@@ -12,7 +12,7 @@ import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
 import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf } from './activity.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.8';
+const VERSION = '1.9';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -27,9 +27,9 @@ const SCREEN_TIP = IOS
   ? 'This iPhone would not let the app keep the screen on. While riding, set Settings > Display & Brightness > Auto-Lock to Never.'
   : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.';
 // Quick labels: one list offered for plain pins, one for photos.
-const PIN_LABELS = ['Hazard', 'Bridge', 'Intersection', 'Trailhead', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint', 'Point of interest', 'Deer stand'];
+const PIN_LABELS = ['Trail marker', 'Hazard', 'Bridge', 'Intersection', 'Trailhead', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint', 'Point of interest', 'Deer stand'];
 const PHOTO_LABELS = [
-  'Point of interest', 'Cool sight', 'Deer stand', 'Mushroom', 'Wildlife', 'Animal tracks', 'Big tree', 'Wildflowers',
+  'Trail marker', 'Point of interest', 'Cool sight', 'Deer stand', 'Mushroom', 'Wildlife', 'Animal tracks', 'Big tree', 'Wildflowers',
   'Berry patch', 'Beaver dam', 'Creek or pond', 'Lookout', 'Old ruins', 'Campsite', 'Boundary marker', 'Trail damage',
 ];
 // What a trail can be like underfoot. The rider picks one while recording and it sticks until changed.
@@ -48,6 +48,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const DEFAULTS = {
   threshold: 8, smoothing: 3,             // merge
   maxAcc: 15, minDist: 3, autoPause: true, keepAwake: true, // recording
+  autoDark: 60,                           // seconds without a touch before the dark screen comes on while recording (0 = never)
   sharing: 'private',                     // who can see my position: 'private' | 'friends' | 'everyone'
   friends: [],                            // [{ code, name }]
   weightKg: 80,                           // for the rough calorie figure
@@ -472,6 +473,7 @@ function updateStats() {
   $('st-dist').textContent = ((state.current ? tracker.dist : 0) / 1000).toFixed(2);
   $('st-pts').textContent = state.current ? tracker.count : 0;
   updateActivity();
+  updatePocket();
   const acc = $('st-acc'), fix = tracker.lastFix;
   if (!fix || Date.now() - state.fixAt > 10000) {
     acc.textContent = '--';
@@ -624,7 +626,16 @@ async function startRide() {
   tracker.start();
   rideMap.center();
   notice('');
-  setWake(true).then((ok) => { if (!ok) notice(SCREEN_TIP); });
+  setWake(true).then((ok) => {
+    if (!ok) { notice(SCREEN_TIP); return; }
+    // For the first few rides, say how to pocket the phone without losing GPS.
+    const shown = Number(localStorage.getItem('tt-dark-tip') ?? 0);
+    if (shown < 3) {
+      localStorage.setItem('tt-dark-tip', shown + 1);
+      notice('Pocketing the phone? Tap DARK SCREEN. It goes black and locks but keeps recording. Pressing the power button stops GPS.');
+    }
+  });
+  touched();
   keepStorage();
   updateRideUi();
 }
@@ -1321,6 +1332,7 @@ function renderSettings() {
       ${added.has(v.key) ? '<button class="mini del" data-act="remove">Remove</button>' : `<span class="pct">${v.width.toFixed(2)} m</span>`}</li>`).join('');
   $('autopause').checked = settings.autoPause;
   $('awake').checked = settings.keepAwake;
+  $('autodark').value = String(settings.autoDark);
   $('show-raw').checked = settings.showRaw;
   $('show-merged').checked = settings.showMerged;
   $('show-ref').checked = settings.showRef;
@@ -1702,6 +1714,10 @@ bindSetting('mind', 'minDist');
 bindSetting('weight', 'weightKg');
 bindSetting('autopause', 'autoPause', { event: 'change' });
 bindSetting('awake', 'keepAwake', { event: 'change', after: () => setWake(!!state.current && settings.keepAwake) });
+$('autodark').addEventListener('change', (e) => {
+  settings.autoDark = Number(e.target.value);
+  saveSettings();
+});
 bindSetting('show-raw', 'showRaw', { event: 'change', after: () => renderNetwork(false) });
 bindSetting('show-merged', 'showMerged', { event: 'change', after: () => renderNetwork(false) });
 bindSetting('show-ref', 'showRef', { event: 'change', after: () => { renderNetwork(false); refreshRideMap(); } });
@@ -1905,6 +1921,74 @@ $('tabs').addEventListener('click', (e) => {
 
 $('btn-start').addEventListener('click', startRide);
 $('btn-finish').addEventListener('click', finishRide);
+
+// ---- dark screen ---------------------------------------------------------------------
+//
+// A web app gets no GPS once the phone's screen is really off: Android and
+// iPhone both cut it. So the app never lets the screen switch off while
+// recording, and offers the next best thing: a black, touch-locked screen that
+// can go in a pocket. On most phones black pixels use almost no power.
+
+let lastTouch = Date.now();
+const touched = () => { lastTouch = Date.now(); };
+document.addEventListener('pointerdown', touched, true);
+
+function enterDark() {
+  if (!state.current || !$('pocket').hidden || $('dlg').open) return;
+  $('pocket').hidden = false;
+  updatePocket();
+  // Full screen hides the phone's own bars and gestures where the browser allows it.
+  try { document.documentElement.requestFullscreen?.({ navigationUI: 'hide' })?.catch(() => {}); } catch { /* not supported */ }
+}
+
+function leaveDark() {
+  if ($('pocket').hidden) return;
+  $('pocket').hidden = true;
+  touched();
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+}
+
+function updatePocket() {
+  if ($('pocket').hidden) return;
+  if (!state.current) { leaveDark(); return; }
+  const stale = Date.now() - state.fixAt > 10000, weak = tracker.lastFix && tracker.lastFix.acc > settings.maxAcc;
+  const label = tracker.state === 'paused' ? 'PAUSED' : stale ? 'NO GPS SIGNAL' : weak ? 'WEAK GPS' : 'RECORDING';
+  $('pocket-state').textContent = label;
+  $('pocket-state').classList.toggle('warn', label !== 'RECORDING');
+  $('pocket-stats').textContent = `${fmtDist(tracker.dist)} · ${fmtClock(state.current.endedAt - state.current.startedAt)}`;
+}
+
+$('btn-dark').addEventListener('click', enterDark);
+
+// Slide the knob most of the way across to get the screen back: a pocket does not do that by accident.
+{
+  const track = $('pocket-slide'), knob = $('pocket-knob');
+  let startX = null, progress = 0;
+  const reset = () => { startX = null; progress = 0; knob.style.transform = ''; };
+  knob.addEventListener('pointerdown', (e) => {
+    startX = e.clientX;
+    try { knob.setPointerCapture(e.pointerId); } catch { /* the drag still works while the finger stays on the knob */ }
+  });
+  knob.addEventListener('pointermove', (e) => {
+    if (startX == null) return;
+    const max = track.clientWidth - knob.offsetWidth - 4;
+    const dx = Math.min(max, Math.max(0, e.clientX - startX));
+    progress = max > 0 ? dx / max : 0;
+    knob.style.transform = `translateX(${dx}px)`;
+  });
+  knob.addEventListener('pointerup', () => {
+    const done = progress > 0.8;
+    reset();
+    if (done) leaveDark();
+  });
+  knob.addEventListener('pointercancel', reset);
+}
+
+// Go dark by itself after a while without a touch, the way a screen normally times out.
+setInterval(() => {
+  if (!tracker || !state.current || !settings.autoDark || state.view !== 'ride') return;
+  if (Date.now() - lastTouch > settings.autoDark * 1000) enterDark();
+}, 2000);
 $('btn-pin').addEventListener('click', dropPin);
 $('btn-pin-idle').addEventListener('click', dropPin);
 $('btn-photo').addEventListener('click', takePhoto);
@@ -1942,7 +2026,7 @@ document.addEventListener('visibilitychange', () => {
     setWake(true);
     const away = Date.now() - state.hiddenAt;
     if (away > 15000 && tracker.state === 'recording') {
-      notice(`GPS was not recorded for ${fmtDur(away)} while the screen was off or another app was in front. Keep this screen on while riding.`);
+      notice(`GPS was not recorded for ${fmtDur(away)} while the screen was off or another app was in front. Next time use DARK SCREEN instead of the power button.`);
     }
   } else if (Date.now() - update.checkedAt > 10 * 60000) {
     checkForUpdate(); // the app was brought back to the front: same check as when it opens
