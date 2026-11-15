@@ -174,7 +174,9 @@ h1 { font-size: 20px; margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 2p
   background: #000; border: 2px solid var(--line); color: #fff; font-weight: 800; font-size: 15px;
 }
 .list .acts button.del { color: #ff8a65; border-color: #7a2a14; flex: 0 0 34%; }
-.list .acts.four { display: grid; grid-template-columns: 1fr 1fr; }
+.list .acts.five { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+.list .acts.five button[data-act=show] { grid-column: span 2; }
+.list [data-act=report] { cursor: pointer; }
 .pinmark { width: 18px; height: 18px; background: #ffee00; transform: rotate(45deg); margin: 0 8px; }
 
 .switch { position: relative; width: 62px; height: 36px; flex: none; }
@@ -244,7 +246,7 @@ dialog {
 }
 dialog::backdrop { background: rgba(0, 0, 0, .78); }
 dialog h2 { margin: 0 0 6px; font-size: 22px; }
-dialog p { margin: 0 0 12px; color: var(--muted); font-size: 16px; }
+dialog p { margin: 0 0 12px; color: var(--muted); font-size: 16px; white-space: pre-line; }
 dialog input[type=text] {
   width: 100%; min-height: 56px; margin-bottom: 12px; padding: 0 14px;
   background: #000; border: 2px solid var(--info); border-radius: 12px; font-size: 20px; font-weight: 700;
@@ -257,6 +259,8 @@ dialog input[type=text] {
 .chips::before { content: "Quick labels (tap one, then save)"; grid-column: 1 / -1; color: var(--muted); font-size: 14px; font-weight: 700; }
 .chips button { min-height: 50px; border-radius: 12px; background: #000; border: 2px solid #ffee00; color: #ffee00; font-weight: 800; font-size: 16px; }
 .chips button.on { background: #ffee00; color: #000; }
+.chips.pick::before { content: "Tap one"; }
+.chips.pick button { border-color: var(--go); color: var(--go); min-height: 54px; }
 .dlg-btns { display: flex; flex-direction: column; gap: 10px; }
 .dlg-btns .big { min-height: 60px; width: 100%; }
 
@@ -277,6 +281,9 @@ dialog input[type=text] {
   min-height: 40px; padding: 4px 12px; border-radius: 999px;
   background: #000; border: 2px solid var(--muted); color: var(--muted); font-weight: 800; font-size: 13px;
 }
+.sharepill.cond { top: 110px; }
+.sharepill.cond.set { border-color: var(--go); color: var(--go); }
+.sharepill[hidden] { display: none; }
 .sharepill.friends { border-color: #ff2bd6; color: #ff2bd6; }
 .sharepill.everyone { border-color: var(--warn); color: var(--warn); }
 .avatar { width: 56px; height: 56px; flex: none; border-radius: 50%; object-fit: cover; border: 2px solid var(--info); background: #1b2530; }

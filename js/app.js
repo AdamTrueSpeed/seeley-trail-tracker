@@ -6,13 +6,13 @@ import { Tracker } from './tracker.js';
 import { MapView } from './mapview.js';
 import { buildNetwork } from './merge.js';
 import { buildKml, buildKmz, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
-import { prepareReference, nameSegments, coverage, overlapShare } from './reference.js';
+import { prepareReference, nameSegments, coverage, overlapShare, indexConditions, conditionsAlong, conditionText } from './reference.js';
 import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
-import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf } from './activity.js';
+import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf } from './activity.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.7';
+const VERSION = '1.8';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -26,7 +26,17 @@ const INSTALLED = navigator.standalone === true || matchMedia('(display-mode: st
 const SCREEN_TIP = IOS
   ? 'This iPhone would not let the app keep the screen on. While riding, set Settings > Display & Brightness > Auto-Lock to Never.'
   : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.';
-const PIN_LABELS = ['Hazard', 'Bridge', 'Intersection', 'Trailhead', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint'];
+// Quick labels: one list offered for plain pins, one for photos.
+const PIN_LABELS = ['Hazard', 'Bridge', 'Intersection', 'Trailhead', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint', 'Point of interest', 'Deer stand'];
+const PHOTO_LABELS = [
+  'Point of interest', 'Cool sight', 'Deer stand', 'Mushroom', 'Wildlife', 'Animal tracks', 'Big tree', 'Wildflowers',
+  'Berry patch', 'Beaver dam', 'Creek or pond', 'Lookout', 'Old ruins', 'Campsite', 'Boundary marker', 'Trail damage',
+];
+// What a trail can be like underfoot. The rider picks one while recording and it sticks until changed.
+const CONDITIONS = [
+  'Dry and firm', 'Grassy', 'Muddy', 'Rocky', 'Water', 'Sandy', 'Gravel', 'Roots',
+  'Rutted', 'Overgrown', 'Washed out', 'Swampy', 'Snow', 'Icy',
+];
 const SAVED_COLOR = '#2fbf9f';
 const RAW_COLOR = '#8a97a6';
 
@@ -202,22 +212,74 @@ function noteSteps(ride) {
 function updateActivity() {
   const ride = state.current;
   $('activity').hidden = !ride;
-  if (!ride) return;
+  if (!ride) {
+    $('cond-pill').hidden = true;
+    return;
+  }
   noteSteps(ride);
   $('act-time').textContent = fmtClock(ride.endedAt - ride.startedAt);
   $('act-steps').textContent = stepsText(ride);
   $('act-kcal').textContent = fmtKcal(activity.kcal);
+  const elev = elevationOf(state.tracks.get(ride.id) ?? []);
+  $('act-elev').textContent = elev ? `↕ ${Math.round(elev.diff)} m` : '';
+  const pill = $('cond-pill');
+  pill.hidden = false;
+  pill.textContent = `TRAIL: ${ride.cond ? ride.cond.toUpperCase() : 'NOT SET'}`;
+  pill.classList.toggle('set', !!ride.cond);
 }
 
-/** Quick labels for pins: the names typed most recently on this phone first, then the standard ones. */
-function pinLabels() {
+// ---- elevation ---------------------------------------------------------------------
+
+/** Highest and lowest point of a saved ride, from its GPS heights (null if there are too few). */
+const elevOf = (ride) => elevationOf(state.tracks.get(ride.id) ?? []);
+
+/** How far a ride went under each trail condition: [{ cond, dist }], longest first. */
+function conditionsOfRide(ride) {
+  const by = new Map();
+  for (const seg of state.tracks.get(ride.id) ?? []) {
+    for (let i = 1; i < seg.length; i++) {
+      if (!seg[i].cond) continue;
+      by.set(seg[i].cond, (by.get(seg[i].cond) ?? 0) + haversine(seg[i - 1].lat, seg[i - 1].lon, seg[i].lat, seg[i].lon));
+    }
+  }
+  return [...by].map(([cond, dist]) => ({ cond, dist })).sort((a, b) => b.dist - a.dist);
+}
+
+/** The end-of-ride report, one fact per line. */
+function reportLines(ride) {
+  const m = methodOf(ride), elev = elevOf(ride), conds = conditionsOfRide(ride);
+  return [
+    `${m.name} · ${fmtDate(ride.startedAt)} · ${byName(ride)}`,
+    `Distance: ${fmtDist(ride.dist)}`,
+    `Time: ${fmtClock(ride.endedAt - ride.startedAt)}`,
+    stepsOf(ride) != null ? `Steps: ${stepsText(ride).replace(' steps', '')}` : null,
+    `Calories: ${fmtKcal(kcalOf(ride))}`,
+    elev ? `Highest point: ${Math.round(elev.high)} m` : 'Elevation: not enough GPS height readings',
+    elev ? `Lowest point: ${Math.round(elev.low)} m` : null,
+    elev ? `Elevation difference: ${Math.round(elev.diff)} m` : null,
+    conds.length ? `Trail conditions: ${conds.map((c) => `${c.cond} ${fmtDist(c.dist)}`).join(', ')}` : null,
+    elev ? 'Heights come from the phone\'s GPS and are rough: the difference is more reliable than the figures themselves.' : null,
+  ].filter(Boolean);
+}
+
+const showReport = (ride) => ask({ title: ride.name, body: reportLines(ride).join('\n'), buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }] });
+
+/**
+ * Quick labels: the names typed most recently on this phone first, then the
+ * standard ones for a pin or a photo.
+ */
+function quickLabels(standard) {
   const recent = Array.isArray(readJson('tt-pin-labels')) ? readJson('tt-pin-labels') : [];
   const seen = new Set();
-  return [...recent, ...PIN_LABELS].filter((l) => !seen.has(l.toLowerCase()) && seen.add(l.toLowerCase()));
+  return [...recent, ...standard].filter((l) => !seen.has(l.toLowerCase()) && seen.add(l.toLowerCase()));
 }
+const pinLabels = () => quickLabels(PIN_LABELS);
+const photoLabels = () => quickLabels(PHOTO_LABELS);
+
 function rememberPinLabel(name) {
-  if (/^Pin \d+$/.test(name) || PIN_LABELS.some((l) => l.toLowerCase() === name.toLowerCase())) return;
-  const recent = pinLabels().filter((l) => !PIN_LABELS.includes(l) && l.toLowerCase() !== name.toLowerCase());
+  const standard = [...PIN_LABELS, ...PHOTO_LABELS].map((l) => l.toLowerCase());
+  if (/^(Pin|Photo) \d+$/.test(name) || standard.includes(name.toLowerCase())) return;
+  const recent = quickLabels([]).filter((l) => l.toLowerCase() !== name.toLowerCase());
   localStorage.setItem('tt-pin-labels', JSON.stringify([name, ...recent].slice(0, 6)));
 }
 
@@ -251,9 +313,11 @@ $('notice').addEventListener('click', () => notice(''));
 /**
  * Modal question. Resolves with { button, text }: the chosen button's value
  * (or 'cancel') and whatever is in the text box. Chips are quick answers:
- * tapping one puts it in the text box, where it can still be edited.
+ * tapping one puts it in the text box, where it can still be edited; with
+ * `pick` set, tapping one is the answer ({ button: 'chip', text: the chip }).
+ * A body with line breaks is shown as separate lines.
  */
-function ask({ title, body = '', input = null, chips = [], buttons, focus = true, image = null }) {
+function ask({ title, body = '', input = null, chips = [], buttons, focus = true, image = null, pick = false }) {
   const dlg = $('dlg'), inp = $('dlg-input');
   const make = (label, cls, type) => Object.assign(document.createElement('button'), { textContent: label, className: cls, type });
   $('dlg-title').textContent = title;
@@ -264,14 +328,6 @@ function ask({ title, body = '', input = null, chips = [], buttons, focus = true
   inp.hidden = !input;
   inp.value = input?.value ?? '';
   inp.placeholder = input?.placeholder ?? '';
-  $('dlg-chips').replaceChildren(...chips.map((c) => {
-    const b = make(c, '', 'button');
-    b.addEventListener('click', () => {
-      inp.value = c;
-      for (const other of $('dlg-chips').children) other.classList.toggle('on', other === b);
-    });
-    return b;
-  }));
   return new Promise((resolve) => {
     // Answer the moment a button is tapped. (The dialog's own "close" event only
     // arrives with the next screen redraw, which is too late if the phone is
@@ -282,6 +338,16 @@ function ask({ title, body = '', input = null, chips = [], buttons, focus = true
       if (dlg.open) dlg.close();
       resolve({ button, text: inp.value.trim() });
     };
+    $('dlg-chips').classList.toggle('pick', pick);
+    $('dlg-chips').replaceChildren(...chips.map((c) => {
+      const b = make(c, '', 'button');
+      b.addEventListener('click', () => {
+        inp.value = c;
+        if (pick) { answer('chip'); return; }
+        for (const other of $('dlg-chips').children) other.classList.toggle('on', other === b);
+      });
+      return b;
+    }));
     $('dlg-btns').replaceChildren(...buttons.map((b) => {
       const el = Object.assign(make(b.label, `big ${b.cls ?? 'ghost'}`, 'submit'), { value: b.value });
       el.addEventListener('click', (e) => {
@@ -571,6 +637,7 @@ function onPoint(p, newSeg) {
   if (newSeg || !segs.length) segs.push([]);
   const seg = segs[segs.length - 1];
   const prev = seg[seg.length - 1];
+  if (ride.cond) p.cond = ride.cond; // the trail condition in force when this point was recorded
   seg.push(p);
   if (prev) { // calories for the stretch just covered (a long gap means a stop, which is not counted)
     const dt = (p.t - prev.t) / 1000;
@@ -653,7 +720,33 @@ async function finishRide() {
   refreshRideMap();
   notice('');
   updateRideUi();
+  if (ride.status === 'done') await showReport(ride);
 }
+
+/** Say what the trail is like from here on. It is stored with every point until it is changed. */
+async function chooseCondition() {
+  const ride = state.current;
+  if (!ride) return;
+  const res = await ask({
+    title: 'What is the trail like here?',
+    body: `Tap one. It applies to everything you record from now until you change it.${ride.cond ? ` Now: ${ride.cond}.` : ''}`,
+    chips: CONDITIONS,
+    pick: true,
+    input: { placeholder: 'Or type your own' },
+    focus: false,
+    buttons: [
+      { label: 'USE WHAT I TYPED', value: 'save', cls: 'go' },
+      { label: 'Clear (not set)', value: 'clear' },
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  if (res.button === 'cancel' || (res.button === 'save' && !res.text)) return;
+  if (res.button === 'clear') delete ride.cond; else ride.cond = res.text.slice(0, 30);
+  await db.put('rides', ride);
+  updateActivity();
+  toast(ride.cond ? `Trail from here: ${ride.cond}` : 'Trail condition cleared');
+}
+$('cond-pill').addEventListener('click', chooseCondition);
 
 /**
  * The position to stamp on a pin or photo right now: the latest good fix, or
@@ -762,7 +855,7 @@ $('photo-input').addEventListener('change', async (e) => {
       : `Pinned where you took it, but GPS was weak (±${Math.round(spot.fix.acc)} m), so the spot may be off.`,
     image: preview,
     input: { placeholder: 'e.g. Washout by the creek' },
-    chips: pinLabels(),
+    chips: photoLabels(),
     focus: false,
     buttons: [{ label: 'SAVE PHOTO', value: 'save', cls: 'info' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
   });
@@ -850,9 +943,10 @@ function renderRides() {
     if (!r.include) li.className = 'off';
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
-      <div><div class="name">${esc(r.name)}</div>
-        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${[stepsText(r), fmtKcal(kcalOf(r))].filter(Boolean).join(' · ')}</div></div>
-      <div class="acts four"><button data-act="rename">Rename</button><button data-act="vehicle">Method</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
+      <div data-act="report"><div class="name">${esc(r.name)}</div>
+        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${
+  [stepsText(r), fmtKcal(kcalOf(r)), elevOf(r) ? `↕ ${Math.round(elevOf(r).diff)} m` : ''].filter(Boolean).join(' · ')}</div></div>
+      <div class="acts five"><button data-act="report">Report</button><button data-act="rename">Rename</button><button data-act="vehicle">Method</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
   $('ride-empty').hidden = rides.length > 0;
@@ -888,6 +982,10 @@ $('ride-list').addEventListener('click', async (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   const ride = state.rides.find((r) => r.id === Number(e.target.closest('li')?.dataset.id));
   if (!act || !ride) return;
+  if (act === 'report') {
+    await showReport(ride);
+    return;
+  }
   if (act === 'include') {
     ride.include = e.target.checked;
   } else if (act === 'rename') {
@@ -927,7 +1025,7 @@ $('pin-list').addEventListener('click', async (e) => {
     return;
   }
   if (act === 'rename') {
-    const res = await ask({ title: pin.photo ? 'Rename photo' : 'Rename pin', input: { value: pin.name, placeholder: 'Type a name, e.g. House' }, chips: pinLabels(), buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
+    const res = await ask({ title: pin.photo ? 'Rename photo' : 'Rename pin', input: { value: pin.name, placeholder: 'Type a name, e.g. House' }, chips: pin.photo ? photoLabels() : pinLabels(), buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
     if (res.button !== 'save' || !res.text) return;
     pin.name = res.text.slice(0, 60);
     rememberPinLabel(pin.name);
@@ -960,8 +1058,10 @@ function computeNetwork() {
   const net = buildNetwork(tracks, settings);
   nameSegments(net.segments, state.refIndex);                 // names from the existing map -> s.ref
   nameSegments(net.segments, state.branchIndex, 12, 'named'); // names given in this app -> s.named
+  const conditions = indexConditions(tracks);
   for (const s of net.segments) {
     s.branch = s.named ?? s.ref ?? null;
+    s.conditions = conditionsAlong(s.points, conditions); // what the trail is like, newest report winning
     s.contributors = [...new Set(s.sources.map((i) => tracks[i].by))];
     // The trail is at least as wide as the widest thing that travelled it. A
     // ride that only touched the segment (crossing at a junction) does not count.
@@ -1025,6 +1125,16 @@ function branchesOf(segments) {
     e.segments.push(s);
     e.narrow = Math.min(e.narrow, s.width.width);
     e.wide = Math.max(e.wide, s.width.width);
+  }
+  for (const b of by.values()) {
+    // A branch's conditions are its segments' conditions, weighted by how long each segment is.
+    const tally = new Map();
+    for (const s of b.segments) {
+      for (const p of s.conditions.parts) tally.set(p.cond, (tally.get(p.cond) ?? 0) + p.share * s.length);
+    }
+    b.conditions = {
+      parts: [...tally].map(([cond, metres]) => ({ cond, share: metres / b.length })).sort((x, y) => y.share - x.share),
+    };
   }
   return [...by.values()].sort((a, b) => (a.name === null) - (b.name === null) || b.length - a.length);
 }
@@ -1108,14 +1218,16 @@ function renderNetwork(fit) {
   $('branch-list').innerHTML = net.branches.map((b) => `
     <li><span class="dot" style="background:${b.name === null ? '#555' : css}"></span>
       <span>${b.name === null ? 'Not named yet' : esc(b.name)} <span class="sub">${b.segments.length} segment${b.segments.length === 1 ? '' : 's'} · ${
-  b.wide - b.narrow < 0.05 ? `${b.wide.toFixed(1)} m wide` : `${b.narrow.toFixed(1)} to ${b.wide.toFixed(1)} m wide`}</span></span>
+  b.wide - b.narrow < 0.05 ? `${b.wide.toFixed(1)} m wide` : `${b.narrow.toFixed(1)} to ${b.wide.toFixed(1)} m wide`}${
+  conditionText(b.conditions) ? ` · ${esc(conditionText(b.conditions))}` : ''}</span></span>
       <span class="pct">${fmtDist(b.length)}</span></li>`).join('');
 
   $('seg-details').hidden = !net.segments.length;
   $('seg-details').querySelector('summary').textContent = `Trail segments (${net.segments.length})`;
   $('seg-list').innerHTML = net.segments.map((s) => `
     <li class="tap ${s.id === state.focusSeg ? 'sel' : ''}" data-seg="${s.id}"><span class="dot" style="background:${s.id === state.focusSeg ? '#fff' : css}"></span>
-      <span>${esc(s.name)} <span class="sub">${fmtDist(s.length)} · ${widthLabel(s.width)} · ridden ×${s.passes} · ${esc(s.contributors.join(', '))}</span></span>
+      <span>${esc(s.name)} <span class="sub">${fmtDist(s.length)} · ${widthLabel(s.width)}${
+  conditionText(s.conditions) ? ` · ${esc(conditionText(s.conditions))}` : ''} · ridden ×${s.passes} · ${esc(s.contributors.join(', '))}</span></span>
       <button class="mini" data-act="name">Name</button></li>`).join('');
 
   const who = contributorsOf(net.tracks, state.pins);

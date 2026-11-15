@@ -2,8 +2,9 @@
 // calories, friend codes and the sealing of shared positions.
 // Usage: node tools/test-units.mjs
 
-import { StepDetector, stepsFromDistance, metFor, kcalFor, kcalOfRide, effortOf } from '../js/activity.js';
+import { StepDetector, stepsFromDistance, metFor, kcalFor, kcalOfRide, effortOf, elevationOf } from '../js/activity.js';
 import { newCode, cleanCode, formatCode, channel, seal, unseal, Relay } from '../js/share.js';
+import { indexConditions, conditionsAlong, conditionText } from '../js/reference.js';
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -55,6 +56,44 @@ function walk({ seconds, stepsPerSecond, swing, noise = 0.25, hz = 60, seed = 3 
   const ride = kcalOfRide([[...pts(0, 600), ...pts(900, 600)]], { kind: 'foot' }, 80);
   const moving = kcalFor('foot', 1.3 * 3.6, 1198, 80);
   check('calories: a stop in the middle of a ride is not counted', Math.abs(ride - moving) < 0.5, `${ride.toFixed(1)} vs ${moving.toFixed(1)} kcal`);
+}
+
+// ---- elevation: a walk over a 20 m hill, with GPS height jitter ---------------------------------
+{
+  let s = 11;
+  const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296 - 0.5; };
+  // 600 points: starts at 100 m, climbs to 120 m, drops to 95 m. Each reading is up to 4 m out.
+  const truth = (i) => (i < 300 ? 100 + (20 * i) / 300 : 120 - (25 * (i - 300)) / 300);
+  const walk = Array.from({ length: 600 }, (_, i) => ({ alt: truth(i) + rnd() * 8 }));
+  walk[150].alt = 190; // one wild reading must not become the summit
+  const e = elevationOf([walk]);
+  check('elevation: highest point of a noisy walk (true 120 m)', Math.abs(e.high - 120) < 3 || (e.high > 120 && e.high < 131), `${e.high.toFixed(1)} m`);
+  check('elevation: lowest point (true 95 m)', Math.abs(e.low - 95) < 3, `${e.low.toFixed(1)} m`);
+  check('elevation: one wild reading moves the high point by under 11 m, not 70', e.high < 131, `${e.high.toFixed(1)} m`);
+  check('elevation: no height readings gives no answer', elevationOf([[{ alt: null }, { alt: null }]]) === null && elevationOf([]) === null);
+  check('elevation: split rides are read as one', (() => { const x = elevationOf([walk.slice(0, 300), walk.slice(300)]); return x && x.low < 97 && x.high > 117; })());
+}
+
+// ---- trail conditions --------------------------------------------------------------------------
+{
+  const at = (m) => ({ lat: 44.93, lon: -75.82 + m / 78700 }); // m metres east along a straight trail
+  const ride = (from, to, cond, t) => Array.from({ length: (to - from) / 4 + 1 }, (_, i) => ({ ...at(from + i * 4), cond, t: t + i }));
+  // Day 1: 0-300 m grassy, 300-400 m muddy. Day 2 (later): 300-400 m ridden again, now dry.
+  const day1 = [...ride(0, 300, 'Grassy', 1000), ...ride(300, 400, 'Muddy', 2000)];
+  const day2 = ride(300, 400, 'Dry and firm', 900000);
+  const trail = [at(0), at(400)];
+  const first = conditionsAlong(trail, indexConditions([{ segments: [day1] }]));
+  check('conditions: a trail takes them from the ride along it', first.parts[0].cond === 'Grassy' && Math.abs(first.parts[0].share - 0.75) < 0.05 && first.parts[1].cond === 'Muddy',
+    conditionText(first));
+  const later = conditionsAlong(trail, indexConditions([{ segments: [day1] }, { segments: [day2] }]));
+  check('conditions: a newer ride replaces what an older one said', later.parts.map((p) => p.cond).join() === 'Grassy,Dry and firm' && later.asOf > 900000, conditionText(later));
+  const untagged = conditionsAlong(trail, indexConditions([{ segments: [day1.map(({ cond, ...p }) => p)] }]));
+  check('conditions: a ride with none recorded says nothing', untagged.parts.length === 0 && conditionText(untagged) === '');
+  const elsewhere = conditionsAlong([{ lat: 44.94, lon: -75.82 }, { lat: 44.941, lon: -75.82 }], indexConditions([{ segments: [day1] }]));
+  check('conditions: a trail a kilometre away is not affected', elsewhere.known === 0);
+  const half = conditionsAlong([at(0), at(800)], indexConditions([{ segments: [day1] }]));
+  check('conditions: a half-surveyed trail knows it is half surveyed', Math.abs(half.known - 0.5) < 0.06, `${Math.round(half.known * 100)}% known`);
+  check('conditions: one condition throughout reads as a single word', conditionText({ parts: [{ cond: 'Rocky', share: 0.97 }] }) === 'Rocky');
 }
 
 // ---- friend codes and sealing -------------------------------------------------------------

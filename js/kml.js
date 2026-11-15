@@ -1,6 +1,7 @@
 // Writing the Google Earth export, and reading an existing KML / KMZ trail map.
 
 import { widthLabel, widthNote } from './width.js';
+import { conditionText } from './reference.js';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const cdata = (s) => `<![CDATA[${String(s).replace(/]]>/g, ']]]]><![CDATA[>')}]]>`;
@@ -30,6 +31,8 @@ function segmentBalloon(s, system) {
     s.width && s.width.passes > 1 ? ['Outermost passes + vehicle', `${num(s.width.swept, 1)} m (no allowance for GPS error)`] : null,
     s.width ? ['Widest through', `${esc(s.width.via ?? 'vehicle')}, ${num(s.width.vehicle, 2)} m, measured from its centre line`] : null,
     s.vehicles?.length ? ['Travelled by', s.vehicles.map(esc).join(', ')] : null,
+    conditionText(s.conditions)
+      ? ['Trail conditions', `${esc(conditionText(s.conditions))} (as of ${new Date(s.conditions.asOf).toLocaleDateString()})`] : null,
     alts.length ? ['GPS elevation', `${num(Math.min(...alts), 0)} to ${num(Math.max(...alts), 0)} m`] : null,
     s.ref ? ['On existing map as', s.ref] : null,
     s.contributors?.length ? ['Surveyed by', s.contributors.map(esc).join(', ')] : null,
@@ -63,6 +66,7 @@ function segmentPlacemark(s, system) {
           + data('vehicle_width_m', num(s.width.vehicle, 2))
           + data('vehicles', (s.vehicles ?? []).join('; '))
         : '')
+      + data('conditions', conditionText(s.conditions))
       + data('existing_trail', s.ref ?? '')
       + data('contributors', (s.contributors ?? []).join('; '))
       + data('rides', s.rides.join('; '))
@@ -117,7 +121,8 @@ export function buildKml(o) {
   for (const b of groups) {
     out.push(`<Folder><name>${esc(b.name ?? 'Not named yet')}</name>`
       + `<description>${esc(`${b.name === null ? 'Stretches with no branch name yet' : 'Branch'} of ${o.name}: `
-        + `${b.segments.length} segment${b.segments.length === 1 ? '' : 's'}, ${num(b.length, 0)} m.`)}</description>`);
+        + `${b.segments.length} segment${b.segments.length === 1 ? '' : 's'}, ${num(b.length, 0)} m.`
+        + (conditionText(b.conditions) ? ` Trail conditions: ${conditionText(b.conditions)}.` : ''))}</description>`);
     for (const s of b.segments) out.push(segmentPlacemark(s, o.name));
     out.push('</Folder>');
   }

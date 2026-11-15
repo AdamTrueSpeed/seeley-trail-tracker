@@ -69,6 +69,34 @@ export async function watchMotion(onReading) {
   return () => window.removeEventListener('devicemotion', handler);
 }
 
+// ---- elevation -------------------------------------------------------------------
+
+/**
+ * Highest and lowest point of a ride, from the GPS height of its points.
+ * A single GPS height reading can be several metres out, so each point is
+ * averaged with its neighbours first; that keeps one wild reading from
+ * becoming the "summit". Returns { low, high, diff } in metres, or null if
+ * there are too few height readings.
+ * @param segments [[{ alt }]]
+ */
+export function elevationOf(segments) {
+  let low = Infinity, high = -Infinity;
+  for (const seg of segments) {
+    const alts = [];
+    for (const p of seg) if (typeof p.alt === 'number' && Number.isFinite(p.alt)) alts.push(p.alt);
+    for (let i = 0; i < alts.length; i++) {
+      const from = Math.max(0, i - 4), to = Math.min(alts.length, i + 5);
+      if (to - from < 5) continue;
+      let sum = 0;
+      for (let j = from; j < to; j++) sum += alts[j];
+      const v = sum / (to - from);
+      if (v < low) low = v;
+      if (v > high) high = v;
+    }
+  }
+  return high >= low ? { low, high, diff: high - low } : null;
+}
+
 // ---- calories --------------------------------------------------------------------
 
 /**

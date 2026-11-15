@@ -31,6 +31,20 @@ class PointGrid {
     const list = this.map.get(k);
     if (list) list.push(x, y, tag); else this.map.set(k, [x, y, tag]);
   }
+  /** Call fn(tag) for every point within `radius` (radius must not exceed the cell size). */
+  each(x, y, radius, fn) {
+    const cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell), r2 = radius * radius;
+    for (let ix = cx - 1; ix <= cx + 1; ix++) {
+      for (let iy = cy - 1; iy <= cy + 1; iy++) {
+        const list = this.map.get(this.key(ix, iy));
+        if (!list) continue;
+        for (let m = 0; m < list.length; m += 3) {
+          if ((list[m] - x) ** 2 + (list[m + 1] - y) ** 2 <= r2) fn(list[m + 2]);
+        }
+      }
+    }
+  }
+
   /** Tag of the nearest point within `radius` (radius must not exceed the cell size), or -1. */
   nearest(x, y, radius) {
     const cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell);
@@ -88,6 +102,80 @@ export function nameSegments(segments, prepared, maxDist = 20, field = 'ref') {
     for (const [ti, n] of votes) if (n > bestN || (n === bestN && ti < best)) { bestN = n; best = ti; }
     if (best >= 0 && bestN >= total * 0.5) seg[field] = prepared.trails[best].name;
   }
+}
+
+// ---- trail conditions ---------------------------------------------------------------
+//
+// While recording, the rider can say what the trail is like ("Muddy"); every
+// point recorded from then on carries that word. Later, each stretch of the
+// merged network takes its condition from the recorded points beside it, and
+// where several rides disagree the most recent one wins.
+
+const CONDITION_REACH = 12; // metres either side of a line that a recorded condition speaks for
+
+/**
+ * Index every recorded point that carries a condition.
+ * @param tracks [{ segments: [[{ lat, lon, t, cond }]] }]
+ */
+export function indexConditions(tracks) {
+  const first = tracks.flatMap((t) => t.segments).find((s) => s.length)?.[0];
+  if (!first) return null;
+  const proj = makeProjection(first.lat, first.lon);
+  const grid = new PointGrid(CONDITION_REACH);
+  const seen = [];
+  for (const track of tracks) {
+    for (const seg of track.segments) {
+      for (const p of seg) {
+        if (!p.cond) continue;
+        grid.add(proj.x(p.lon), proj.y(p.lat), seen.length);
+        seen.push({ cond: p.cond, t: p.t });
+      }
+    }
+  }
+  return seen.length ? { proj, grid, seen } : null;
+}
+
+/**
+ * What a line is like along its length.
+ * @param points [{ lat, lon }]
+ * @returns { parts: [{ cond, share }] largest first (shares of the whole line),
+ *            known: share of the line with any condition recorded, asOf: time of the newest one used }
+ */
+export function conditionsAlong(points, index) {
+  const none = { parts: [], known: 0, asOf: null };
+  if (!index || points.length < 2) return none;
+  const tally = new Map();
+  let total = 0, known = 0, asOf = 0;
+  along(points.map((p) => [index.proj.x(p.lon), index.proj.y(p.lat)]), SAMPLE, (x, y) => {
+    total++;
+    let newest = null;
+    index.grid.each(x, y, CONDITION_REACH, (tag) => {
+      if (!newest || index.seen[tag].t > newest.t) newest = index.seen[tag];
+    });
+    if (!newest) return;
+    known++;
+    asOf = Math.max(asOf, newest.t);
+    tally.set(newest.cond, (tally.get(newest.cond) ?? 0) + 1);
+  });
+  if (!known) return none;
+  return {
+    parts: [...tally].map(([cond, n]) => ({ cond, share: n / total })).sort((a, b) => b.share - a.share),
+    known: known / total,
+    asOf,
+  };
+}
+
+/**
+ * "Grassy 60%, Rocky 30%", or '' if nothing has been recorded. Small leftovers
+ * are dropped, and it says so when part of the line has no condition recorded.
+ */
+export function conditionText(c) {
+  if (!c?.parts.length) return '';
+  const main = c.parts.filter((p) => p.share >= 0.1).slice(0, 3);
+  const shown = main.length ? main : c.parts.slice(0, 1);
+  if (shown.length === 1 && shown[0].share >= 0.9) return shown[0].cond;
+  const known = c.parts.reduce((sum, p) => sum + p.share, 0);
+  return shown.map((p) => `${p.cond} ${Math.round(p.share * 100)}%`).join(', ') + (known < 0.9 ? ', rest not recorded' : '');
 }
 
 /** Share (0 to 1) of line a that runs within maxDist metres of line b. Both are [[lat, lon]]. */
