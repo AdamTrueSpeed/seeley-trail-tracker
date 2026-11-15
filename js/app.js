@@ -15,7 +15,7 @@ import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.15';
+const VERSION = '1.16';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
