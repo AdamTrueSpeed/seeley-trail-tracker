@@ -104,11 +104,18 @@
         <summary>Trail segments in the network</summary>
         <ul id="seg-list" class="coverage"></ul>
       </details>
+      <details id="who-details" hidden>
+        <summary>Contributors</summary>
+        <ul id="who-list" class="coverage"></ul>
+      </details>
     </div>
   </section>
 
   <!-- ===== Settings ===== -->
   <section class="view page" id="view-settings" hidden>
+    <h1>You</h1>
+    <div class="toggle"><span>Your name<small id="name-val"></small><small>Saved with every ride and pin you record on this phone.</small></span><button id="btn-name" class="mid ghost">Change</button></div>
+
     <h1>GPS recording</h1>
     <div class="slider">
       <div class="row"><span>Ignore fixes worse than</span><b id="acc-val"></b></div>
@@ -147,12 +154,17 @@
       <img src="icons/icon-192.png" alt="" width="64" height="64">
       <div><b>Seeley Trail Tracker</b><span id="version"></span></div>
     </div>
-    <button id="btn-install" class="mid" hidden>Install on this phone</button>
+    <div class="btnrow">
+      <button id="btn-update" class="mid ghost">Check for updates</button>
+      <button id="btn-install" class="mid" hidden>Install on this phone</button>
+    </div>
     <ul class="tips">
       <li>Keep this app open and the screen on while riding. Phones stop giving GPS to web apps when the screen is off or another app is in front.</li>
       <li id="tip-ios" hidden>iPhone: if GPS shows as blocked or stays weak, open the iPhone's Settings &gt; Privacy &amp; Security &gt; Location Services &gt; Safari Websites, choose While Using the App and turn on Precise Location. If the screen still dims during a ride, set Display &amp; Brightness &gt; Auto-Lock to Never while riding.</li>
       <li>Wait for the GPS number at the top to turn green before you set off.</li>
       <li>Everything is stored on this phone only. Save a backup file now and then.</li>
+      <li>To combine rides from two phones, save a backup file on one and use Restore on the other. Each ride keeps the name of whoever recorded it.</li>
+      <li>The app looks for a newer version every time it opens with a signal, and installs it by itself.</li>
     </ul>
   </section>
 </main>
@@ -168,8 +180,8 @@
   <form method="dialog">
     <h2 id="dlg-title"></h2>
     <p id="dlg-body"></p>
+    <input id="dlg-input" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="done">
     <div id="dlg-chips" class="chips"></div>
-    <input id="dlg-input" type="text" autocomplete="off" enterkeyhint="done">
     <div id="dlg-btns" class="dlg-btns"></div>
   </form>
 </dialog>

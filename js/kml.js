@@ -24,6 +24,7 @@ function segmentBalloon(s) {
     ['Times ridden', s.passes],
     alts.length ? ['GPS elevation', `${num(Math.min(...alts), 0)} to ${num(Math.max(...alts), 0)} m`] : null,
     s.ref ? ['On existing map as', s.ref] : null,
+    s.contributors?.length ? ['Surveyed by', s.contributors.map(esc).join(', ')] : null,
     s.rides.length ? ['From rides', s.rides.map(esc).join(', ')] : null,
   ].filter(Boolean).map(([k, v]) => `<tr><th align="left">${k}</th><td>${v}</td></tr>`).join('');
   return `<table>${facts}</table>`
@@ -33,15 +34,18 @@ function segmentBalloon(s) {
 
 /**
  * @param o.name      document name
- * @param o.segments  merged network from buildNetwork (optionally with .name / .ref)
- * @param o.waypoints [{ name, lat, lon, alt, t, rideName }]
- * @param o.rides     [{ name, startedAt, segments: [[{lat, lon, alt}]] }] raw tracks (hidden folder)
+ * @param o.segments  merged network from buildNetwork (optionally with .name / .ref / .contributors)
+ * @param o.waypoints [{ name, by, lat, lon, alt, t, rideName }]
+ * @param o.rides     [{ name, by, startedAt, segments: [[{lat, lon, alt}]] }] raw tracks (hidden folder)
+ * @param o.contributors [{ name, rides, dist, pins }] who recorded what
  * @param o.color     key of TRAIL_COLORS
  * @param o.settings  { threshold, smoothing } recorded in the description
  */
 export function buildKml(o) {
   const color = (TRAIL_COLORS[o.color] ?? TRAIL_COLORS.orange).kml;
   const total = o.segments.reduce((d, s) => d + s.length, 0);
+  const who = (o.contributors ?? []).map((c) =>
+    `${c.name} (${c.rides} ride${c.rides === 1 ? '' : 's'}, ${num(c.dist / 1000, 2)} km, ${c.pins} pin${c.pins === 1 ? '' : 's'})`);
   const out = [];
   out.push('<?xml version="1.0" encoding="UTF-8"?>');
   out.push('<kml xmlns="http://www.opengis.net/kml/2.2">');
@@ -49,6 +53,7 @@ export function buildKml(o) {
   out.push(`<name>${esc(o.name)}</name>`);
   out.push(`<description>${esc(
     `GPS-surveyed trail network: ${o.segments.length} segments, ${num(total, 0)} m, from ${o.rides.length} ride(s). `
+    + (who.length ? `Contributors: ${who.join('; ')}. ` : '')
     + `Overlapping passes merged within ${o.settings.threshold} m; smoothing ${o.settings.smoothing}. `
     + `Exported ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC by Seeley Trail Tracker.`)}</description>`);
   out.push(`<Style id="trail"><LineStyle><color>${color}</color><width>4</width></LineStyle></Style>`);
@@ -67,6 +72,7 @@ export function buildKml(o) {
       + `<Data name="points"><value>${s.points.length}</value></Data>`
       + `<Data name="passes"><value>${s.passes}</value></Data>`
       + `<Data name="existing_trail"><value>${esc(s.ref ?? '')}</value></Data>`
+      + `<Data name="contributors"><value>${esc((s.contributors ?? []).join('; '))}</value></Data>`
       + `<Data name="rides"><value>${esc(s.rides.join('; '))}</value></Data>`
       + '</ExtendedData>');
     out.push('<styleUrl>#trail</styleUrl>');
@@ -84,6 +90,7 @@ export function buildKml(o) {
         + `<tr><th align="left">Longitude</th><td>${num(p.lon, 6)}</td></tr>`
         + (p.alt == null ? '' : `<tr><th align="left">GPS elevation</th><td>${num(p.alt, 1)} m</td></tr>`)
         + `<tr><th align="left">Marked</th><td>${new Date(p.t).toLocaleString()}</td></tr>`
+        + (p.by ? `<tr><th align="left">Marked by</th><td>${esc(p.by)}</td></tr>` : '')
         + (p.rideName ? `<tr><th align="left">During</th><td>${esc(p.rideName)}</td></tr>` : '')
         + `</table>`;
       out.push(`<Placemark><name>${esc(p.name)}</name><description>${cdata(info)}</description><styleUrl>#pin</styleUrl>`
@@ -100,7 +107,7 @@ export function buildKml(o) {
         `<LineString><tessellate>1</tessellate><altitudeMode>clampToGround</altitudeMode><coordinates>${s.map(coord).join(' ')}</coordinates></LineString>`);
       if (!lines.length) continue;
       out.push(`<Placemark><name>${esc(r.name)}</name><visibility>0</visibility>`
-        + `<description>${esc(`Raw GPS track recorded ${new Date(r.startedAt).toLocaleString()}`)}</description>`
+        + `<description>${esc(`Raw GPS track recorded ${new Date(r.startedAt).toLocaleString()}${r.by ? ` by ${r.by}` : ''}`)}</description>`
         + `<styleUrl>#raw</styleUrl><MultiGeometry>${lines.join('')}</MultiGeometry></Placemark>`);
     }
     out.push('</Folder>');

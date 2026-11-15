@@ -1,20 +1,17 @@
 // Offline support. The whole app is saved on the phone the first time it is
-// opened, so it starts with no signal. When there is signal the newest version
-// is fetched; when there is not (or it is slow) the saved copy is used.
+// opened, so it starts with no signal. When there is signal the newest copy
+// of each file is fetched; when there is not (or it is slow) the saved copy
+// is used. The list of files comes from version.json, the same list the app
+// itself uses when it updates.
 
-const CACHE = 'seeley-trail-tracker-v2';
-const SHELL = [
-  './', 'index.html', 'styles.css', 'manifest.json',
-  'js/app.js', 'js/db.js', 'js/demo.js', 'js/geo.js', 'js/kml.js',
-  'js/mapview.js', 'js/merge.js', 'js/reference.js', 'js/tracker.js',
-  'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
-];
+const CACHE = 'seeley-trail-tracker';
 const OPTIONAL = ['reference.kml'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
+    const { files } = await (await fetch('version.json', { cache: 'no-store' })).json();
     const cache = await caches.open(CACHE);
-    await cache.addAll(SHELL);
+    await cache.addAll(files.map((f) => new Request(f, { cache: 'reload' })));
     await Promise.all(OPTIONAL.map((url) => cache.add(url).catch(() => {})));
     await self.skipWaiting();
   })());
@@ -31,6 +28,8 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  // The update check must see what is really published, never a saved copy.
+  if (url.pathname.endsWith('/version.json')) return;
   url.search = '';
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);

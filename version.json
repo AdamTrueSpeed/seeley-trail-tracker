@@ -1,0 +1,21 @@
+{
+  "version": "1.2",
+  "files": [
+    "./",
+    "index.html",
+    "styles.css",
+    "manifest.json",
+    "js/app.js",
+    "js/db.js",
+    "js/demo.js",
+    "js/geo.js",
+    "js/kml.js",
+    "js/mapview.js",
+    "js/merge.js",
+    "js/reference.js",
+    "js/tracker.js",
+    "icons/icon-180.png",
+    "icons/icon-192.png",
+    "icons/icon-512.png"
+  ]
+}

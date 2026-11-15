@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "start": "node tools/serve.mjs",
-    "test": "node tools/test-merge.mjs"
+    "test": "node tools/test-merge.mjs && node tools/check-release.mjs"
   }
 }

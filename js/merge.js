@@ -12,7 +12,7 @@ import { makeProjection, haversine, rdp, resample, clamp } from './geo.js';
 /**
  * @param tracks [{ name, segments: [[{lat, lon, alt}]] }] in the order ridden
  * @param opts   { threshold: metres, smoothing: 0..10 }
- * @returns { segments: [{ id, points, length, passes, rides }], stats }
+ * @returns { segments: [{ id, points, length, passes, sources, rides }], stats }
  */
 export function buildNetwork(tracks, opts = {}) {
   const T = clamp(opts.threshold ?? 8, 1, 100);
@@ -406,6 +406,7 @@ export function buildNetwork(tracks, opts = {}) {
       points,
       length,
       passes: Math.round(passes / e.length),
+      sources: [...users].sort((a, b) => a - b), // indexes into `tracks`
       rides: [...users].sort((a, b) => a - b).map((ti) => tracks[ti].name),
     };
   });

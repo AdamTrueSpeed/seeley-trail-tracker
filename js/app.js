@@ -9,7 +9,7 @@ import { buildKml, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
 import { prepareReference, nameSegments, coverage } from './reference.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.1';
+const VERSION = '1.2'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -77,6 +77,28 @@ const stamp = () => {
 };
 const rideName = (r) => r.name || 'Ride in progress';
 const doneRides = () => state.rides.filter((r) => r.status === 'done');
+const byName = (x) => x.by || 'Unknown';
+
+/** Quick labels for pins: the names typed most recently on this phone first, then the standard ones. */
+function pinLabels() {
+  const recent = Array.isArray(readJson('tt-pin-labels')) ? readJson('tt-pin-labels') : [];
+  const seen = new Set();
+  return [...recent, ...PIN_LABELS].filter((l) => !seen.has(l.toLowerCase()) && seen.add(l.toLowerCase()));
+}
+function rememberPinLabel(name) {
+  if (/^Pin \d+$/.test(name) || PIN_LABELS.some((l) => l.toLowerCase() === name.toLowerCase())) return;
+  const recent = pinLabels().filter((l) => !PIN_LABELS.includes(l) && l.toLowerCase() !== name.toLowerCase());
+  localStorage.setItem('tt-pin-labels', JSON.stringify([name, ...recent].slice(0, 6)));
+}
+
+/** Who has recorded what: [{ name, rides, dist, pins }], busiest first. */
+function contributorsOf(rides, pins) {
+  const by = new Map();
+  const entry = (name) => by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, pins: 0 }).get(name);
+  for (const r of rides) { const e = entry(byName(r)); e.rides++; e.dist += r.dist ?? 0; }
+  for (const p of pins) entry(byName(p)).pins++;
+  return [...by.values()].sort((a, b) => b.dist - a.dist || b.pins - a.pins);
+}
 
 // ---- small UI helpers -------------------------------------------------------
 
@@ -97,8 +119,9 @@ function notice(msg) {
 $('notice').addEventListener('click', () => notice(''));
 
 /**
- * Modal question. Resolves with { button, text } where button is the chosen
- * button's value, 'chip' (with .chip) or 'cancel'.
+ * Modal question. Resolves with { button, text }: the chosen button's value
+ * (or 'cancel') and whatever is in the text box. Chips are quick answers:
+ * tapping one puts it in the text box, where it can still be edited.
  */
 function ask({ title, body = '', input = null, chips = [], buttons, focus = true }) {
   const dlg = $('dlg'), inp = $('dlg-input');
@@ -111,16 +134,17 @@ function ask({ title, body = '', input = null, chips = [], buttons, focus = true
   inp.placeholder = input?.placeholder ?? '';
   $('dlg-chips').replaceChildren(...chips.map((c) => {
     const b = make(c, '', 'button');
-    b.addEventListener('click', () => dlg.close('chip:' + c));
+    b.addEventListener('click', () => {
+      inp.value = c;
+      for (const other of $('dlg-chips').children) other.classList.toggle('on', other === b);
+    });
     return b;
   }));
   $('dlg-btns').replaceChildren(...buttons.map((b) => Object.assign(make(b.label, `big ${b.cls ?? 'ghost'}`, 'submit'), { value: b.value })));
   return new Promise((resolve) => {
     dlg.returnValue = '';
     dlg.addEventListener('close', () => {
-      const v = dlg.returnValue || 'cancel';
-      const text = inp.value.trim();
-      resolve(v.startsWith('chip:') ? { button: 'chip', chip: v.slice(5), text } : { button: v, text });
+      resolve({ button: dlg.returnValue || 'cancel', text: inp.value.trim() });
     }, { once: true });
     dlg.showModal();
     if (input && focus) { inp.focus(); inp.select(); } else dlg.focus();
@@ -294,7 +318,7 @@ function startGps() {
 
 async function startRide() {
   if (!tracker.geo) { toast('This browser cannot use GPS.'); return; }
-  const ride = { id: Date.now(), name: '', startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0 };
+  const ride = { id: Date.now(), name: '', by: settings.userName, startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0 };
   await db.put('rides', ride);
   state.rides.push(ride);
   state.tracks.set(ride.id, []);
@@ -397,18 +421,22 @@ async function dropPin() {
     return;
   }
   // The position is taken now; naming it can wait until you have stopped.
-  const pin = { id: Date.now(), ride: state.current?.id ?? null, name: '', lat: fix.lat, lon: fix.lon, alt: fix.alt, acc: fix.acc, t: Date.now() };
+  const pin = {
+    id: Date.now(), ride: state.current?.id ?? null, name: '', by: settings.userName,
+    lat: fix.lat, lon: fix.lon, alt: fix.alt, acc: fix.acc, t: Date.now(),
+  };
   const res = await ask({
-    title: 'Drop a pin here',
-    body: fresh ? `Position locked (±${Math.round(fix.acc)} m). Pick a label or type your own.`
-      : `GPS is weak right now (±${Math.round(fix.acc)} m), so this pin may be off.`,
-    chips: PIN_LABELS,
-    input: { placeholder: 'Your own label' },
+    title: 'Name this pin',
+    body: fresh ? `Position locked (±${Math.round(fix.acc)} m). Type a name, or tap a quick label, then SAVE PIN.`
+      : `GPS is weak right now (±${Math.round(fix.acc)} m), so this pin may be off. Type a name, or tap a quick label, then SAVE PIN.`,
+    input: { placeholder: 'Type a name, e.g. House' },
+    chips: pinLabels(),
     focus: false,
     buttons: [{ label: 'SAVE PIN', value: 'save', cls: 'info' }, { label: 'Cancel', value: 'cancel' }],
   });
-  if (res.button === 'cancel') return;
-  pin.name = res.button === 'chip' ? res.chip : (res.text || `Pin ${state.pins.length + 1}`);
+  if (res.button !== 'save') return;
+  pin.name = res.text.slice(0, 60) || `Pin ${state.pins.length + 1}`;
+  rememberPinLabel(pin.name);
   await db.put('pins', pin);
   state.pins.push(pin);
   rideMap.setPins(state.pins);
@@ -458,7 +486,7 @@ function renderRides() {
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
       <div><div class="name">${esc(r.name)}</div>
-        <div class="meta">${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
+        <div class="meta"><b>${esc(byName(r))}</b> · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
       <div class="acts"><button data-act="rename">Rename</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
@@ -471,7 +499,7 @@ function renderRides() {
     li.innerHTML = `
       <div class="pinmark"></div>
       <div><div class="name">${esc(p.name)}</div>
-        <div class="meta">${fmtDate(p.t)} · ±${Math.round(p.acc)} m${ride ? ` · ${esc(rideName(ride))}` : ''}</div></div>
+        <div class="meta"><b>${esc(byName(p))}</b> · ${fmtDate(p.t)} · ±${Math.round(p.acc)} m${ride ? ` · ${esc(rideName(ride))}` : ''}</div></div>
       <div class="acts"><button data-act="rename">Rename</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
@@ -513,9 +541,10 @@ $('pin-list').addEventListener('click', async (e) => {
   const pin = state.pins.find((p) => p.id === Number(e.target.closest('li')?.dataset.id));
   if (!act || !pin) return;
   if (act === 'rename') {
-    const res = await ask({ title: 'Rename pin', chips: PIN_LABELS, input: { value: pin.name }, buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
-    if (res.button === 'cancel' || (res.button === 'save' && !res.text)) return;
-    pin.name = res.button === 'chip' ? res.chip : res.text;
+    const res = await ask({ title: 'Rename pin', input: { value: pin.name, placeholder: 'Type a name, e.g. House' }, chips: pinLabels(), buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
+    if (res.button !== 'save' || !res.text) return;
+    pin.name = res.text.slice(0, 60);
+    rememberPinLabel(pin.name);
     await db.put('pins', pin);
   } else if (act === 'delete') {
     const res = await ask({ title: `Delete pin "${pin.name}"?`, buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'DELETE PIN', value: 'yes', cls: 'stop' }] });
@@ -532,10 +561,11 @@ $('pin-list').addEventListener('click', async (e) => {
 function computeNetwork() {
   const tracks = state.rides
     .filter((r) => r.include && state.tracks.get(r.id)?.length)
-    .map((r) => ({ id: r.id, name: rideName(r), startedAt: r.startedAt, segments: state.tracks.get(r.id) }));
+    .map((r) => ({ id: r.id, name: rideName(r), by: byName(r), dist: r.dist, startedAt: r.startedAt, segments: state.tracks.get(r.id) }));
   const net = buildNetwork(tracks, settings);
   nameSegments(net.segments, state.refIndex);
   for (const s of net.segments) {
+    s.contributors = [...new Set(s.sources.map((i) => tracks[i].by))];
     const what = s.ref ?? (s.rides.length === 1 ? s.rides[0] : (state.refIndex ? 'New trail' : 'Trail'));
     s.name = `${what} · ${s.id}`;
   }
@@ -580,8 +610,16 @@ function renderNetwork(fit) {
   $('seg-details').querySelector('summary').textContent = `Trail segments in the network (${net.segments.length})`;
   $('seg-list').innerHTML = net.segments.map((s) => `
     <li><span class="dot" style="background:${css}"></span>
-      <span>${esc(s.name)} <span class="sub">${s.points.length} points · ridden ×${s.passes}</span></span>
+      <span>${esc(s.name)} <span class="sub">${s.points.length} points · ridden ×${s.passes} · ${esc(s.contributors.join(', '))}</span></span>
       <span class="pct">${fmtDist(s.length)}</span></li>`).join('');
+
+  const who = contributorsOf(net.tracks, state.pins);
+  $('who-details').hidden = !who.length;
+  $('who-details').querySelector('summary').textContent = `Contributors (${who.length})`;
+  $('who-list').innerHTML = who.map((c) => `
+    <li><span class="dot" style="background:#fff"></span>
+      <span>${esc(c.name)} <span class="sub">${c.rides} ride${c.rides === 1 ? '' : 's'} · ${c.pins} pin${c.pins === 1 ? '' : 's'}</span></span>
+      <span class="pct">${fmtDist(c.dist)}</span></li>`).join('');
 
   if (fit) {
     if (focus) netMap.fit(['focus']);
@@ -606,6 +644,7 @@ function makeKml() {
     segments: net.segments,
     waypoints: state.pins.map((p) => ({ ...p, rideName: state.rides.find((r) => r.id === p.ride)?.name })),
     rides: net.tracks,
+    contributors: contributorsOf(net.tracks, state.pins),
     color: settings.color,
     settings,
   });
@@ -652,8 +691,119 @@ function renderSettings() {
 
   const points = [...state.tracks.values()].reduce((n, segs) => n + segs.reduce((m, s) => m + s.length, 0), 0);
   $('storage-info').textContent = `${doneRides().length} ride(s), ${points} GPS points and ${state.pins.length} pin(s) are stored on this phone.`;
-  $('version').textContent = `Version ${VERSION}${DEMO ? ' · demo mode' : ''}`;
+  $('name-val').textContent = settings.userName || 'Not set yet';
+  const checked = update.checkedAt ? ` (checked ${new Date(update.checkedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })})` : '';
+  $('version').textContent = `Version ${VERSION}${DEMO ? ' · demo mode' : ''} · ${{
+    unknown: 'not checked yet',
+    checking: 'checking for a newer version…',
+    current: `up to date${checked}`,
+    offline: 'could not check for updates (no signal)',
+    waiting: `version ${update.latest} will install when you are not in the middle of something`,
+    updating: `installing version ${update.latest}…`,
+    stuck: `version ${update.latest} is available but did not install; tap Check for updates`,
+  }[update.status]}`;
 }
+
+// ---- who is using this phone ---------------------------------------------------
+
+/**
+ * Save the user's name and put it on everything recorded on this phone that
+ * has no name yet (or carries the name being replaced).
+ */
+async function setUserName(name) {
+  const old = settings.userName;
+  settings.userName = name;
+  saveSettings();
+  for (const [store, list] of [['rides', state.rides], ['pins', state.pins]]) {
+    for (const item of list) {
+      if (item.by && item.by !== old) continue;
+      item.by = name;
+      await db.put(store, item);
+    }
+  }
+  state.network = null;
+  renderSettings();
+  if (state.view === 'rides') renderRides();
+  if (state.view === 'net') renderNetwork(false);
+}
+
+async function askName(first) {
+  const res = await ask({
+    title: first ? 'Welcome! What is your name?' : 'Your name',
+    body: 'It is saved with the rides and pins you record, so you can see who mapped what when rides from more than one phone are combined.',
+    input: { value: settings.userName ?? '', placeholder: 'Your first name' },
+    buttons: first
+      ? [{ label: 'CONTINUE', value: 'save', cls: 'go' }]
+      : [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button === 'save' && res.text) await setUserName(res.text.slice(0, 40));
+}
+$('btn-name').addEventListener('click', () => askName(false));
+
+// ---- staying up to date ---------------------------------------------------------
+//
+// version.json on the website says which version is published and which files
+// make it up. If that is not the version running here, every file is fetched
+// fresh and the app restarts itself. It never does that during a ride or while
+// a question is on screen, and it gives up quietly when there is no signal.
+
+const update = { status: 'unknown', latest: null, checkedAt: 0 };
+const setUpdate = (status) => { update.status = status; renderSettings(); };
+
+async function checkForUpdate(manual = false) {
+  setUpdate('checking');
+  let info;
+  try {
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), 8000);
+    const res = await fetch('version.json', { cache: 'no-store', signal: stop.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    info = await res.json();
+  } catch {
+    setUpdate('offline');
+    return;
+  }
+  update.latest = info.version;
+  update.checkedAt = Date.now();
+  if (info.version === VERSION) {
+    localStorage.removeItem('tt-update-tried');
+    setUpdate('current');
+    return;
+  }
+  // Tried this very version a moment ago and it did not take: don't restart in a loop.
+  const tried = readJson('tt-update-tried');
+  if (!manual && tried.version === info.version && Date.now() - tried.at < 15 * 60000) {
+    setUpdate('stuck');
+    return;
+  }
+  if (state.current || $('dlg').open) {
+    setUpdate('waiting');
+    return;
+  }
+  setUpdate('updating');
+  toast(`Updating to version ${info.version}…`, 15000);
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update().catch(() => {});
+    // 'reload' skips every cache on the way, and refreshes the offline copy as it passes through.
+    await Promise.all(info.files.map((f) => fetch(f, { cache: 'reload' }).then((r) => { if (!r.ok) throw new Error(f); })));
+  } catch {
+    setUpdate('offline');
+    return;
+  }
+  if (state.current || $('dlg').open) { // something started while the files were coming down
+    setUpdate('waiting');
+    return;
+  }
+  localStorage.setItem('tt-update-tried', JSON.stringify({ version: info.version, at: Date.now() }));
+  location.reload();
+}
+$('btn-update').addEventListener('click', async () => {
+  await checkForUpdate(true);
+  if (update.status === 'current') toast(`You have the latest version (${VERSION}).`);
+  if (update.status === 'offline') toast('Could not reach the update server. Try again when you have a signal.');
+});
 
 function bindSetting(id, key, { event = 'input', after } = {}) {
   $(id).addEventListener(event, (e) => {
@@ -715,7 +865,7 @@ $('btn-ref-clear').addEventListener('click', async () => {
 
 $('btn-backup').addEventListener('click', async () => {
   const data = {
-    app: 'trail-tracker', format: 1, exportedAt: new Date().toISOString(), settings,
+    app: 'trail-tracker', format: 1, exportedAt: new Date().toISOString(), contributor: settings.userName, settings,
     rides: state.rides.map((r) => ({ ...r, points: (state.tracks.get(r.id) ?? []).flat() })),
     pins: state.pins,
   };
@@ -731,15 +881,17 @@ $('backup-file').addEventListener('change', async (e) => {
   try {
     const data = JSON.parse(await file.text());
     if (data.app !== 'trail-tracker' || !Array.isArray(data.rides)) throw new Error('That is not a Trail Tracker backup file.');
+    // Whatever carries no name was recorded by whoever made the backup.
+    const from = data.contributor || 'Unknown';
     let added = 0;
     for (const { points, ...ride } of data.rides) {
       if (state.rides.some((r) => r.id === ride.id) || !points?.length) continue;
-      await db.put('rides', { ...ride, status: 'done', name: ride.name || 'Restored ride' });
+      await db.put('rides', { ...ride, by: ride.by || from, status: 'done', name: ride.name || 'Restored ride' });
       await db.addPoints(points.map((p) => ({ ...p, ride: ride.id })));
       added++;
     }
     for (const pin of data.pins ?? []) {
-      if (!state.pins.some((p) => p.id === pin.id)) await db.put('pins', pin);
+      if (!state.pins.some((p) => p.id === pin.id)) await db.put('pins', { ...pin, by: pin.by || from });
     }
     const current = state.current;
     await loadAll();
@@ -843,6 +995,8 @@ document.addEventListener('visibilitychange', () => {
     if (away > 15000 && tracker.state === 'recording') {
       notice(`GPS was not recorded for ${fmtDur(away)} while the screen was off or another app was in front. Keep this screen on while riding.`);
     }
+  } else if (Date.now() - update.checkedAt > 10 * 60000) {
+    checkForUpdate(); // the app was brought back to the front: same check as when it opens
   }
 });
 
@@ -865,15 +1019,26 @@ async function boot() {
   renderSettings();
   rideMap.fit();
   updateRideUi();
-  await recoverUnfinished();
-  updateRideUi();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Turn GPS on straight away if this site already has permission; otherwise wait for a tap.
   let granted = DEMO;
   try { granted ||= (await navigator.permissions.query({ name: 'geolocation' })).state === 'granted'; } catch { /* not supported */ }
   if (granted) startGps();
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Just restarted into a new version?
+  if (readJson('tt-update-tried').version === VERSION) {
+    localStorage.removeItem('tt-update-tried');
+    toast(`Updated to version ${VERSION}`, 5000);
+  }
+  // Look for a newer version before anything else asks for attention: if there
+  // is one, the app restarts here. With no signal this comes back at once, and
+  // a slow connection is not allowed to hold things up for long.
+  await Promise.race([checkForUpdate(), new Promise((resolve) => setTimeout(resolve, 4000))]);
+
+  await recoverUnfinished();
+  updateRideUi();
+  if (!settings.userName) await askName(true);
 }
 
 boot().catch((err) => {
