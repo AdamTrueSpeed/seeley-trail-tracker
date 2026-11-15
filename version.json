@@ -1,5 +1,5 @@
 {
-  "version": "1.5",
+  "version": "1.6",
   "files": [
     "./",
     "index.html",
@@ -17,6 +17,8 @@
     "js/width.js",
     "icons/icon-180.png",
     "icons/icon-192.png",
-    "icons/icon-512.png"
+    "icons/icon-512.png",
+    "icons/qr.png",
+    "icons/qr.svg"
   ]
 }

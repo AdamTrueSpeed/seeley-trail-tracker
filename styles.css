@@ -112,8 +112,9 @@ button { cursor: pointer; touch-action: manipulation; }
 .key.ref { background: repeating-linear-gradient(90deg, #fff 0 5px, transparent 5px 9px); }
 
 /* ---- big buttons ---- */
-.actions { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; padding: 10px; border-top: 2px solid var(--line); }
-.actions.rec { grid-template-columns: 1fr 1fr; }
+.actions { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 8px; padding: 10px; border-top: 2px solid var(--line); }
+.actions.rec { grid-template-columns: 1fr 1fr 1fr; }
+.actions .big { padding: 8px 4px; font-size: clamp(15px, 4.6vw, 20px); }
 .actions[hidden] { display: none; }
 .big {
   min-height: 68px; padding: 8px 10px;
@@ -263,6 +264,31 @@ dialog input[type=text] {
   position: fixed; left: 50%; bottom: calc(var(--tab-h) + env(safe-area-inset-bottom) + 96px); transform: translateX(-50%);
   max-width: 90vw; padding: 12px 18px; border-radius: 12px;
   background: #fff; color: #000; font-weight: 800; text-align: center; z-index: 20;
+}
+
+/* ---- photos ---- */
+#dlg-img { display: block; max-width: 100%; max-height: 46vh; margin: 0 auto 12px; border-radius: 10px; border: 2px solid var(--line); }
+#dlg-img[hidden] { display: none; }
+.list .thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 10px; border: 2px solid var(--info); display: block; }
+
+/* ---- share this app ---- */
+.qrcard { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px; background: #fff; border-radius: 14px; }
+.qrcard img { display: block; width: min(60vw, 240px); height: auto; }
+.qrcard span { color: #000; font-weight: 700; font-size: 13.5px; overflow-wrap: anywhere; text-align: center; -webkit-user-select: text; user-select: text; }
+
+/* The poster only exists on paper. */
+#poster { display: none; }
+@media print {
+  @page { margin: 18mm; }
+  html, body { height: auto; background: #fff; color: #000; }
+  #app, .tabs, dialog, .toast { display: none !important; }
+  #poster { display: block; text-align: center; font: 16pt/1.4 system-ui, sans-serif; color: #000; }
+  #poster h1 { font-size: 34pt; margin: 0 0 4pt; border: 0; color: #000; }
+  #poster .lead { font-size: 15pt; margin: 0 0 10pt; }
+  #poster img { width: 110mm; height: 110mm; }
+  #poster .url { font-size: 12pt; font-weight: 700; margin: 6pt 0 14pt; overflow-wrap: anywhere; }
+  #poster ol { display: inline-block; text-align: left; max-width: 150mm; margin: 0; padding-left: 20pt; font-size: 13pt; }
+  #poster li { margin-bottom: 6pt; }
 }
 
 @media (min-width: 700px) {

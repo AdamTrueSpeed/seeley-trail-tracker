@@ -110,6 +110,7 @@ export function buildKml(o) {
   out.push('<Style id="raw"><LineStyle><color>99ffffff</color><width>1.5</width></LineStyle></Style>');
   out.push('<Style id="pin"><IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/pushpin/ylw-pushpin.png</href></Icon>'
     + '<hotSpot x="20" y="2" xunits="pixels" yunits="pixels"/></IconStyle></Style>');
+  out.push('<Style id="photo"><IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/camera.png</href></Icon></IconStyle></Style>');
 
   // One folder per branch, so Google Earth lists the system as: system > Branches > branch > its segments.
   out.push('<Folder><name>Branches</name><open>1</open>');
@@ -125,7 +126,9 @@ export function buildKml(o) {
   if (o.waypoints.length) {
     out.push('<Folder><name>Waypoints</name><open>1</open>');
     for (const p of o.waypoints) {
-      const info = `<table>`
+      // p.image is the picture's path inside the KMZ file (see buildKmz).
+      const info = (p.image ? `<p><img src="${esc(p.image)}" width="480"></p>` : '')
+        + `<table>`
         + `<tr><th align="left">Latitude</th><td>${num(p.lat, 6)}</td></tr>`
         + `<tr><th align="left">Longitude</th><td>${num(p.lon, 6)}</td></tr>`
         + (p.alt == null ? '' : `<tr><th align="left">GPS elevation</th><td>${num(p.alt, 1)} m</td></tr>`)
@@ -133,7 +136,7 @@ export function buildKml(o) {
         + (p.by ? `<tr><th align="left">Marked by</th><td>${esc(p.by)}</td></tr>` : '')
         + (p.rideName ? `<tr><th align="left">During</th><td>${esc(p.rideName)}</td></tr>` : '')
         + `</table>`;
-      out.push(`<Placemark><name>${esc(p.name)}</name><description>${cdata(info)}</description><styleUrl>#pin</styleUrl>`
+      out.push(`<Placemark><name>${esc(p.name)}</name><description>${cdata(info)}</description><styleUrl>#${p.image ? 'photo' : 'pin'}</styleUrl>`
         + `<Point><altitudeMode>clampToGround</altitudeMode><coordinates>${coord(p)}</coordinates></Point></Placemark>`);
     }
     out.push('</Folder>');
@@ -156,6 +159,70 @@ export function buildKml(o) {
   out.push('</Document>');
   out.push('</kml>');
   return out.join('\n');
+}
+
+// ---- KMZ: the KML plus its pictures in one file ---------------------------------
+
+let crcTable;
+function crc32(bytes) {
+  crcTable ??= Uint32Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * A KMZ is a zip file holding doc.kml and the pictures it refers to. The
+ * entries are stored without compression (JPEGs do not shrink anyway), which
+ * keeps this to a few lines and every unzip tool can read it.
+ * @param kml   the KML text
+ * @param files [{ name: 'files/x.jpg', data: Uint8Array }]
+ * @returns Blob
+ */
+export function buildKmz(kml, files) {
+  const entries = [{ name: 'doc.kml', data: new TextEncoder().encode(kml) }, ...files];
+  const now = new Date();
+  const time = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+  const date = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const parts = [], central = [];
+  let offset = 0;
+  for (const e of entries) {
+    const name = new TextEncoder().encode(e.name);
+    const crc = crc32(e.data);
+    // Fields shared by the entry's own header and its line in the directory at the end.
+    const common = new DataView(new ArrayBuffer(26));
+    common.setUint16(0, 20, true);          // version needed
+    common.setUint16(2, 0x0800, true);      // names are UTF-8
+    common.setUint16(4, 0, true);           // stored, not compressed
+    common.setUint16(6, time, true);
+    common.setUint16(8, date, true);
+    common.setUint32(10, crc, true);
+    common.setUint32(14, e.data.length, true);
+    common.setUint32(18, e.data.length, true);
+    common.setUint16(22, name.length, true);
+    common.setUint16(24, 0, true);          // no extra field
+    const local = new DataView(new ArrayBuffer(4));
+    local.setUint32(0, 0x04034b50, true);
+    parts.push(local.buffer, common.buffer, name, e.data);
+    const dir = new DataView(new ArrayBuffer(6)), tail = new DataView(new ArrayBuffer(14));
+    dir.setUint32(0, 0x02014b50, true);
+    dir.setUint16(4, 20, true);             // version made by
+    tail.setUint32(10, offset, true);       // where this entry starts (comment, disk and attribute fields stay 0)
+    central.push(dir.buffer, common.buffer, tail.buffer, name);
+    offset += 4 + 26 + name.length + e.data.length;
+  }
+  const centralSize = central.reduce((n, p) => n + p.byteLength, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, entries.length, true);
+  end.setUint16(10, entries.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end.buffer], { type: 'application/vnd.google-earth.kmz' });
 }
 
 // ---- reading ---------------------------------------------------------------

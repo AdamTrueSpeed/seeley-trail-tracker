@@ -48,12 +48,16 @@
     <div class="actions" id="actions-idle">
       <button id="btn-start" class="big go">START RIDE</button>
       <button id="btn-pin-idle" class="big info">DROP PIN</button>
+      <button id="btn-photo-idle" class="big info">PHOTO</button>
     </div>
     <div class="actions rec" id="actions-rec" hidden>
       <button id="btn-pause" class="big warn">PAUSE</button>
       <button id="btn-pin" class="big info">DROP PIN</button>
+      <button id="btn-photo" class="big info">PHOTO</button>
       <button id="btn-finish" class="big stop wide">FINISH &amp; SAVE</button>
     </div>
+    <!-- Opens the phone's own camera; the picture comes back to the app. -->
+    <input type="file" id="photo-input" accept="image/*" capture="environment" hidden>
   </section>
 
   <!-- ===== Saved rides ===== -->
@@ -128,6 +132,20 @@
     <h1>You</h1>
     <div class="toggle"><span>Your name<small id="name-val"></small><small>Saved with every ride and pin you record on this phone.</small></span><button id="btn-name" class="mid ghost">Change</button></div>
 
+    <h1>Share this app</h1>
+    <p class="hint">Friends can scan this with their phone's camera, on Android or iPhone, to open the app and install it. Their rides stay on their own phone.</p>
+    <div class="qrcard">
+      <img src="icons/qr.svg" alt="QR code that opens Seeley Trail Tracker" width="220" height="220">
+      <span id="share-url"></span>
+    </div>
+    <div class="btnrow">
+      <button id="btn-share-link" class="mid">Share the link</button>
+      <button id="btn-share-qr" class="mid">Share the QR picture</button>
+    </div>
+    <div class="btnrow">
+      <button id="btn-print-qr" class="mid ghost">Print a QR poster</button>
+    </div>
+
     <h1>GPS recording</h1>
     <div class="slider">
       <div class="row"><span>Ignore fixes worse than</span><b id="acc-val"></b></div>
@@ -197,12 +215,27 @@
   <form method="dialog">
     <h2 id="dlg-title"></h2>
     <p id="dlg-body"></p>
+    <img id="dlg-img" alt="" hidden>
     <input id="dlg-input" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="done">
     <div id="dlg-chips" class="chips"></div>
     <div id="dlg-btns" class="dlg-btns"></div>
   </form>
 </dialog>
 <div id="toast" class="toast" hidden></div>
+
+<!-- Only this shows on paper when "Print a QR poster" is used. -->
+<section id="poster">
+  <h1>Seeley Trail Tracker</h1>
+  <p class="lead">Map your trails with your phone. Works with no signal.</p>
+  <img src="icons/qr.svg" alt="">
+  <p class="url" id="poster-url"></p>
+  <ol>
+    <li>Point your phone's camera at the square and tap the link that appears.</li>
+    <li><b>Android:</b> tap the blue INSTALL bar at the top (or the &#8942; menu, then Install app).</li>
+    <li><b>iPhone:</b> in Safari tap Share, then Add to Home Screen.</li>
+    <li>Open it from your home screen, press START RIDE and allow location.</li>
+  </ol>
+</section>
 
 <script type="module" src="js/app.js"></script>
 </body>

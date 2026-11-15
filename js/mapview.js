@@ -56,7 +56,7 @@ export class MapView {
   }
 
   setPins(pins) {
-    this.pins = pins.map((p) => ({ name: p.name, xy: this._xy(p.lat, p.lon) }));
+    this.pins = pins.map((p) => ({ name: p.name, photo: !!p.photo, xy: this._xy(p.lat, p.lon) }));
     this.redraw();
   }
 
@@ -285,16 +285,24 @@ export class MapView {
     }
 
     for (const p of this.pins) {
+      // A plain pin is a yellow diamond; a photo is a cyan square with a lens dot.
       const px = ox + p.xy[0] * s, py = oy - p.xy[1] * s, r = 7 * dpr;
+      const color = p.photo ? '#18ffff' : '#ffee00';
       ctx.beginPath();
-      ctx.moveTo(px, py - r); ctx.lineTo(px + r, py); ctx.lineTo(px, py + r); ctx.lineTo(px - r, py);
-      ctx.closePath();
-      ctx.fillStyle = '#ffee00';
+      if (p.photo) ctx.rect(px - r, py - r * 0.8, r * 2, r * 1.6);
+      else { ctx.moveTo(px, py - r); ctx.lineTo(px + r, py); ctx.lineTo(px, py + r); ctx.lineTo(px - r, py); ctx.closePath(); }
+      ctx.fillStyle = color;
       ctx.strokeStyle = '#000';
       ctx.lineWidth = 2 * dpr;
       ctx.fill();
       ctx.stroke();
-      if (this.scale > 0.3) text(p.name, px + 11 * dpr, py, 13, '#ffee00', 'left');
+      if (p.photo) {
+        ctx.beginPath();
+        ctx.arc(px, py, r * 0.42, 0, 7);
+        ctx.fillStyle = '#000';
+        ctx.fill();
+      }
+      if (this.scale > 0.3) text(p.name, px + 11 * dpr, py, 13, color, 'left');
     }
 
     if (this.pos) {

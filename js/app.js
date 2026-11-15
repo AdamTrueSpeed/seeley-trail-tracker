@@ -5,12 +5,15 @@ import { db, keepStorage } from './db.js';
 import { Tracker } from './tracker.js';
 import { MapView } from './mapview.js';
 import { buildNetwork } from './merge.js';
-import { buildKml, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
+import { buildKml, buildKmz, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
 import { prepareReference, nameSegments, coverage, overlapShare } from './reference.js';
 import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.5'; // keep in step with version.json (tools/check-release.mjs checks it)
+const VERSION = '1.6';
+// Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
+// QR code: if it ever changes, the two pictures have to be made again.
+const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -175,12 +178,14 @@ $('notice').addEventListener('click', () => notice(''));
  * (or 'cancel') and whatever is in the text box. Chips are quick answers:
  * tapping one puts it in the text box, where it can still be edited.
  */
-function ask({ title, body = '', input = null, chips = [], buttons, focus = true }) {
+function ask({ title, body = '', input = null, chips = [], buttons, focus = true, image = null }) {
   const dlg = $('dlg'), inp = $('dlg-input');
   const make = (label, cls, type) => Object.assign(document.createElement('button'), { textContent: label, className: cls, type });
   $('dlg-title').textContent = title;
   $('dlg-body').textContent = body;
   $('dlg-body').hidden = !body;
+  $('dlg-img').hidden = !image;
+  if (image) $('dlg-img').src = image; else $('dlg-img').removeAttribute('src');
   inp.hidden = !input;
   inp.value = input?.value ?? '';
   inp.placeholder = input?.placeholder ?? '';
@@ -559,14 +564,24 @@ async function finishRide() {
   updateRideUi();
 }
 
-async function dropPin() {
+/**
+ * The position to stamp on a pin or photo right now: the latest good fix, or
+ * failing that the latest fix of any quality. Null (with a message) if there
+ * is nothing recent.
+ */
+function spotNow() {
   const fresh = Date.now() - state.goodAt < 15000;
   const fix = fresh ? tracker.good : (Date.now() - state.fixAt < 15000 ? tracker.lastFix : null);
-  if (!fix) {
-    if (!state.gpsWanted) startGps();
-    toast('No GPS position yet – try again in a moment.');
-    return;
-  }
+  if (fix) return { fix, fresh };
+  if (!state.gpsWanted) startGps();
+  toast('No GPS position yet – try again in a moment.');
+  return null;
+}
+
+async function dropPin() {
+  const spot = spotNow();
+  if (!spot) return;
+  const { fix, fresh } = spot;
   // The position is taken now; naming it can wait until you have stopped.
   const pin = {
     id: Date.now(), ride: state.current?.id ?? null, name: '', by: settings.userName,
@@ -588,6 +603,117 @@ async function dropPin() {
   state.pins.push(pin);
   rideMap.setPins(state.pins);
   toast(`Pin saved: ${pin.name}`);
+}
+
+// ---- photos -----------------------------------------------------------------------
+//
+// A photo is a pin with a picture. The position is taken at the tap on PHOTO,
+// before the phone's camera opens, because the app sits in the background (and
+// gets no GPS) while the camera is up.
+
+let photoSpot = null;
+function takePhoto() {
+  const spot = spotNow();
+  if (!spot) return;
+  photoSpot = { ...spot, t: Date.now(), ride: state.current?.id ?? null };
+  $('photo-input').click(); // must happen inside the tap, or the phone refuses to open the camera
+}
+
+/**
+ * Scale a camera picture down to a sensible size for keeping (phones shoot
+ * far bigger than a trail record needs) and make a small thumbnail for lists.
+ */
+async function readPhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    // Wait on the load event rather than img.decode(): decode() only settles when
+    // the screen is being redrawn, which is not a given just after the camera closes.
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('not a picture'));
+      img.src = url;
+    });
+    const draw = (maxSide) => {
+      const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * k));
+      c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      return c;
+    };
+    const blob = await new Promise((resolve, reject) =>
+      draw(2048).toBlob((b) => (b ? resolve(b) : reject(new Error('could not encode'))), 'image/jpeg', 0.85));
+    return { blob, thumb: draw(160).toDataURL('image/jpeg', 0.7) };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+$('photo-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  const spot = photoSpot;
+  photoSpot = null;
+  if (!file || !spot) return;
+  let picture;
+  try {
+    picture = await readPhoto(file);
+  } catch {
+    toast('That photo could not be read.', 5000);
+    return;
+  }
+  const n = state.pins.filter((p) => p.photo).length + 1;
+  const preview = URL.createObjectURL(picture.blob);
+  const res = await ask({
+    title: 'Name this photo',
+    body: spot.fresh ? `Pinned where you took it (±${Math.round(spot.fix.acc)} m).`
+      : `Pinned where you took it, but GPS was weak (±${Math.round(spot.fix.acc)} m), so the spot may be off.`,
+    image: preview,
+    input: { placeholder: 'e.g. Washout by the creek' },
+    chips: pinLabels(),
+    focus: false,
+    buttons: [{ label: 'SAVE PHOTO', value: 'save', cls: 'info' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
+  });
+  URL.revokeObjectURL(preview);
+  if (res.button === 'discard') return;
+  // Backing out of the question keeps the photo, under a plain name: it cannot be retaken.
+  const pin = {
+    id: Date.now(), ride: spot.ride, name: res.text.slice(0, 60) || `Photo ${n}`, by: settings.userName,
+    lat: spot.fix.lat, lon: spot.fix.lon, alt: spot.fix.alt, acc: spot.fix.acc, t: spot.t,
+    photo: true, thumb: picture.thumb,
+  };
+  try {
+    await db.put('photos', { id: pin.id, type: picture.blob.type, data: await picture.blob.arrayBuffer() });
+    await db.put('pins', pin);
+  } catch {
+    notice('Could not save the photo to the phone\'s storage. Free up some space and try again.');
+    return;
+  }
+  state.pins.push(pin);
+  if (res.text) rememberPinLabel(pin.name);
+  rideMap.setPins(state.pins);
+  if (state.view === 'rides') renderRides();
+  toast(`Photo saved: ${pin.name}`);
+});
+
+/** The full picture of a photo pin as a Blob, or null if it is missing. */
+async function photoOf(pin) {
+  const rec = await db.get('photos', pin.id);
+  return rec ? new Blob([rec.data], { type: rec.type || 'image/jpeg' }) : null;
+}
+
+async function viewPhoto(pin) {
+  const blob = await photoOf(pin);
+  if (!blob) { toast('The picture for this pin is missing.'); return; }
+  const url = URL.createObjectURL(blob);
+  await ask({
+    title: pin.name,
+    body: `${byName(pin)} · ${fmtDate(pin.t)} · ±${Math.round(pin.acc)} m · ${pin.lat.toFixed(5)}, ${pin.lon.toFixed(5)}`,
+    image: url,
+    buttons: [{ label: 'Close', value: 'cancel' }],
+  });
+  URL.revokeObjectURL(url);
 }
 
 /** A ride left "recording" means the app was closed mid-ride. Its points are all on disk. */
@@ -656,10 +782,10 @@ function renderRides() {
     const li = document.createElement('li');
     li.dataset.id = p.id;
     li.innerHTML = `
-      <div class="pinmark"></div>
+      ${p.photo ? `<img class="thumb" src="${esc(p.thumb ?? '')}" alt="" data-act="view">` : '<div class="pinmark"></div>'}
       <div><div class="name">${esc(p.name)}</div>
         <div class="meta"><b>${esc(byName(p))}</b> · ${fmtDate(p.t)} · ±${Math.round(p.acc)} m${ride ? ` · ${esc(rideName(ride))}` : ''}</div></div>
-      <div class="acts"><button data-act="rename">Rename</button><button data-act="delete" class="del">Delete</button></div>`;
+      <div class="acts">${p.photo ? '<button data-act="view">View</button>' : ''}<button data-act="rename">Rename</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
   $('pin-empty').hidden = state.pins.length > 0;
@@ -703,16 +829,26 @@ $('pin-list').addEventListener('click', async (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   const pin = state.pins.find((p) => p.id === Number(e.target.closest('li')?.dataset.id));
   if (!act || !pin) return;
+  if (act === 'view') {
+    await viewPhoto(pin);
+    return;
+  }
   if (act === 'rename') {
-    const res = await ask({ title: 'Rename pin', input: { value: pin.name, placeholder: 'Type a name, e.g. House' }, chips: pinLabels(), buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
+    const res = await ask({ title: pin.photo ? 'Rename photo' : 'Rename pin', input: { value: pin.name, placeholder: 'Type a name, e.g. House' }, chips: pinLabels(), buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
     if (res.button !== 'save' || !res.text) return;
     pin.name = res.text.slice(0, 60);
     rememberPinLabel(pin.name);
     await db.put('pins', pin);
   } else if (act === 'delete') {
-    const res = await ask({ title: `Delete pin "${pin.name}"?`, buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'DELETE PIN', value: 'yes', cls: 'stop' }] });
+    const res = await ask({
+      title: `Delete ${pin.photo ? 'photo' : 'pin'} "${pin.name}"?`,
+      body: pin.photo ? 'The picture is deleted with it. This cannot be undone.' : '',
+      image: pin.photo ? pin.thumb : null,
+      buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: pin.photo ? 'DELETE PHOTO' : 'DELETE PIN', value: 'yes', cls: 'stop' }],
+    });
     if (res.button !== 'yes') return;
     await db.del('pins', pin.id);
+    if (pin.photo) await db.del('photos', pin.id);
     state.pins = state.pins.filter((p) => p !== pin);
   }
   renderRides();
@@ -912,23 +1048,38 @@ function remergeSoon() {
   }, 60);
 }
 
-function makeKml() {
+/**
+ * The Google Earth file: a .kml, or a .kmz (the same thing zipped together
+ * with the pictures) when there are photo pins. Resolves { name, data, type }.
+ */
+async function makeExport() {
   const net = state.network;
   const system = systemName();
   const slug = system.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'trail-network';
-  const name = `${slug}_${stamp()}.kml`;
+  const pictures = [], waypoints = [];
+  for (const p of state.pins) {
+    const w = { ...p, rideName: state.rides.find((r) => r.id === p.ride)?.name };
+    const rec = p.photo ? await db.get('photos', p.id) : null;
+    if (rec) {
+      w.image = `files/photo-${p.id}.jpg`;
+      pictures.push({ name: w.image, data: new Uint8Array(rec.data) });
+    }
+    waypoints.push(w);
+  }
   const text = buildKml({
     name: system,
     branches: net.branches,
     travel: totalsByMethod(state.rides.filter((r) => net.tracks.some((t) => t.id === r.id))),
     segments: net.segments,
-    waypoints: state.pins.map((p) => ({ ...p, rideName: state.rides.find((r) => r.id === p.ride)?.name })),
+    waypoints,
     rides: net.tracks,
     contributors: contributorsOf(net.tracks, state.pins),
     color: settings.color,
     settings,
   });
-  return { name, text, type: 'application/vnd.google-earth.kml+xml' };
+  return pictures.length
+    ? { name: `${slug}_${stamp()}.kmz`, data: buildKmz(text, pictures), type: 'application/vnd.google-earth.kmz' }
+    : { name: `${slug}_${stamp()}.kml`, data: text, type: 'application/vnd.google-earth.kml+xml' };
 }
 
 $('btn-export').addEventListener('click', async () => {
@@ -936,9 +1087,9 @@ $('btn-export').addEventListener('click', async () => {
   if (!state.network.segments.length) { toast('Nothing to export yet – record a ride first.'); return; }
   // The first export settles what the trail system is called (the suggestion is filled in).
   if (!settings.systemName && !(await askSystemName())) return;
-  const kml = makeKml();
-  if (await saveFile(kml.name, kml.text, kml.type) !== 'downloaded') return;
-  state.lastKml = new File([kml.text], kml.name, { type: kml.type });
+  const kml = await makeExport();
+  if (await saveFile(kml.name, kml.data, kml.type) !== 'downloaded') return;
+  state.lastKml = new File([kml.data], kml.name, { type: kml.type });
   $('btn-share').hidden = !navigator.canShare?.({ files: [state.lastKml] });
   toast(`Saved ${kml.name} to Downloads`, 4500);
 });
@@ -977,7 +1128,8 @@ function renderSettings() {
   $('btn-ref-clear').hidden = !state.ref;
 
   const points = [...state.tracks.values()].reduce((n, segs) => n + segs.reduce((m, s) => m + s.length, 0), 0);
-  $('storage-info').textContent = `${doneRides().length} ride(s), ${points} GPS points and ${state.pins.length} pin(s) are stored on this phone.`;
+  const photoCount = state.pins.filter((p) => p.photo).length;
+  $('storage-info').textContent = `${doneRides().length} ride(s), ${points} GPS points, ${state.pins.length - photoCount} pin(s) and ${photoCount} photo(s) are stored on this phone. A backup file holds all of it, pictures included.`;
   $('name-val').textContent = settings.userName || 'Not set yet';
   const checked = update.checkedAt ? ` (checked ${new Date(update.checkedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })})` : '';
   $('version').textContent = `Version ${VERSION}${DEMO ? ' · demo mode' : ''} · ${{
@@ -1167,11 +1319,58 @@ $('btn-ref-clear').addEventListener('click', async () => {
   if (res.button === 'yes') await setReference(null);
 });
 
+// Pictures travel inside the backup file as text (base64).
+function toBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(text);
+}
+const fromBase64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0)).buffer;
+
+// ---- share this app ------------------------------------------------------------
+
+$('share-url').textContent = $('poster-url').textContent = SHARE_URL;
+$('btn-share-link').addEventListener('click', async () => {
+  const message = { title: 'Seeley Trail Tracker', text: 'Map your trails with your phone, even with no signal. Open this to install it:', url: SHARE_URL };
+  if (navigator.share) {
+    try { await navigator.share(message); } catch { /* cancelled */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(SHARE_URL);
+    toast('Link copied. Paste it into a message.');
+  } catch {
+    toast(SHARE_URL, 8000);
+  }
+});
+$('btn-share-qr').addEventListener('click', async () => {
+  try {
+    const picture = await (await fetch('icons/qr.png')).blob();
+    const file = new File([picture], 'seeley-trail-tracker-qr.png', { type: 'image/png' });
+    if (navigator.canShare?.({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: 'Seeley Trail Tracker' }); } catch { /* cancelled */ }
+      return;
+    }
+    download(file.name, picture, 'image/png');
+    toast('QR picture saved to Downloads');
+  } catch {
+    toast('Could not load the QR picture.');
+  }
+});
+$('btn-print-qr').addEventListener('click', () => window.print());
+
 $('btn-backup').addEventListener('click', async () => {
+  const photos = [];
+  for (const p of state.pins.filter((x) => x.photo)) {
+    const rec = await db.get('photos', p.id);
+    if (rec) photos.push({ id: p.id, type: rec.type, data: toBase64(rec.data) });
+  }
   const data = {
     app: 'trail-tracker', format: 1, exportedAt: new Date().toISOString(), contributor: settings.userName, settings,
     rides: state.rides.map((r) => ({ ...r, points: (state.tracks.get(r.id) ?? []).flat() })),
     pins: state.pins,
+    photos,
     branches: state.branches,
   };
   if (await saveFile(`trail-tracker-backup_${stamp()}.json`, JSON.stringify(data), 'application/json') === 'downloaded') {
@@ -1195,8 +1394,15 @@ $('backup-file').addEventListener('change', async (e) => {
       await db.addPoints(points.map((p) => ({ ...p, ride: ride.id })));
       added++;
     }
+    let addedPins = 0;
     for (const pin of data.pins ?? []) {
-      if (!state.pins.some((p) => p.id === pin.id)) await db.put('pins', { ...pin, by: pin.by || from });
+      if (state.pins.some((p) => p.id === pin.id)) continue;
+      await db.put('pins', { ...pin, by: pin.by || from });
+      addedPins++;
+    }
+    for (const photo of data.photos ?? []) {
+      if (photo?.id == null || !photo.data || await db.get('photos', photo.id)) continue;
+      await db.put('photos', { id: photo.id, type: photo.type || 'image/jpeg', data: fromBase64(photo.data) });
     }
     // Branch names come across too, except where this phone has already named the same stretch.
     const branches = state.branches.slice();
@@ -1211,7 +1417,9 @@ $('backup-file').addEventListener('change', async (e) => {
     state.network = null;
     refreshRideMap();
     renderSettings();
-    toast(added ? `Restored ${added} ride(s)` : 'Everything in that backup is already here');
+    toast(added || addedPins
+      ? `Restored ${added} ride(s) and ${addedPins} pin(s) or photo(s)`
+      : 'Everything in that backup is already here');
   } catch (err) {
     toast(err.message || 'That backup could not be read.', 5000);
   }
@@ -1273,6 +1481,8 @@ $('btn-start').addEventListener('click', startRide);
 $('btn-finish').addEventListener('click', finishRide);
 $('btn-pin').addEventListener('click', dropPin);
 $('btn-pin-idle').addEventListener('click', dropPin);
+$('btn-photo').addEventListener('click', takePhoto);
+$('btn-photo-idle').addEventListener('click', takePhoto);
 $('btn-pause').addEventListener('click', () => {
   if (tracker.state === 'paused') tracker.resume(); else tracker.pause();
   if (state.current) db.put('rides', state.current);

@@ -3,24 +3,33 @@
 //
 //   rides  { id, name, startedAt, endedAt, status: 'recording' | 'done', include, dist, count }
 //   points { ride, seg, lat, lon, alt, t, acc, spd }     one record per GPS point
-//   pins   { id, ride, name, lat, lon, alt, acc, t }      waypoints
-//   kv     misc single values (the imported reference map)
+//   pins   { id, ride, name, lat, lon, alt, acc, t, photo, thumb }   waypoints (photo pins carry a small thumbnail)
+//   photos { id (= its pin's id), type, data: ArrayBuffer }            the full picture of a photo pin
+//   kv     misc single values (the imported reference map, branch names)
 
 const NAME = 'trail-tracker';
-const VERSION = 1;
+const VERSION = 2; // 2 added the photos store
 
 let opening;
 function open() {
   opening ??= new Promise((resolve, reject) => {
     const req = indexedDB.open(NAME, VERSION);
     req.onupgradeneeded = () => {
+      // Runs for a brand-new phone and for one moving up from an older version,
+      // so only add what is missing: nothing already recorded is touched.
       const d = req.result;
-      d.createObjectStore('rides', { keyPath: 'id' });
-      d.createObjectStore('points', { autoIncrement: true }).createIndex('ride', 'ride');
-      d.createObjectStore('pins', { keyPath: 'id' });
-      d.createObjectStore('kv');
+      const has = (store) => d.objectStoreNames.contains(store);
+      if (!has('rides')) d.createObjectStore('rides', { keyPath: 'id' });
+      if (!has('points')) d.createObjectStore('points', { autoIncrement: true }).createIndex('ride', 'ride');
+      if (!has('pins')) d.createObjectStore('pins', { keyPath: 'id' });
+      if (!has('kv')) d.createObjectStore('kv');
+      if (!has('photos')) d.createObjectStore('photos', { keyPath: 'id' });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // If a newer copy of the app (another tab) needs to upgrade the storage, step aside.
+      req.result.onversionchange = () => { req.result.close(); opening = undefined; };
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
   });
   return opening;
