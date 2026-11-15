@@ -266,6 +266,23 @@ dialog input[type=text] {
   background: #fff; color: #000; font-weight: 800; text-align: center; z-index: 20;
 }
 
+/* ---- steps and calories while recording ---- */
+.activity { display: flex; justify-content: space-around; gap: 8px; padding: 6px 8px; border-bottom: 2px solid var(--line); font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; }
+.activity[hidden] { display: none; }
+.activity span:empty { display: none; }
+
+/* ---- sharing ---- */
+.sharepill {
+  position: absolute; left: 10px; top: 62px;
+  min-height: 40px; padding: 4px 12px; border-radius: 999px;
+  background: #000; border: 2px solid var(--muted); color: var(--muted); font-weight: 800; font-size: 13px;
+}
+.sharepill.friends { border-color: #ff2bd6; color: #ff2bd6; }
+.sharepill.everyone { border-color: var(--warn); color: var(--warn); }
+.avatar { width: 56px; height: 56px; flex: none; border-radius: 50%; object-fit: cover; border: 2px solid var(--info); background: #1b2530; }
+#mode-val, #code-val { color: var(--info); font-size: 19px; font-weight: 800; margin: 2px 0; -webkit-user-select: text; user-select: text; }
+#friend-list:empty { display: none; }
+
 /* ---- photos ---- */
 #dlg-img { display: block; max-width: 100%; max-height: 46vh; margin: 0 auto 12px; border-radius: 10px; border: 2px solid var(--line); }
 #dlg-img[hidden] { display: none; }

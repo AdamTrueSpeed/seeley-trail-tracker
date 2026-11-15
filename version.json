@@ -1,10 +1,11 @@
 {
-  "version": "1.6",
+  "version": "1.7",
   "files": [
     "./",
     "index.html",
     "styles.css",
     "manifest.json",
+    "js/activity.js",
     "js/app.js",
     "js/db.js",
     "js/demo.js",
@@ -13,6 +14,7 @@
     "js/mapview.js",
     "js/merge.js",
     "js/reference.js",
+    "js/share.js",
     "js/tracker.js",
     "js/width.js",
     "icons/icon-180.png",

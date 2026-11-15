@@ -60,6 +60,25 @@ export class MapView {
     this.redraw();
   }
 
+  /** Other people sharing their position: [{ name, lat, lon, friend, avatar (data URL or null), at (ms it was heard) }] */
+  setPeople(people) {
+    this.pictures ??= new Map(); // data URL -> Image, so each picture is decoded once
+    this.people = people.map((p) => {
+      let picture = null;
+      if (p.avatar) {
+        picture = this.pictures.get(p.avatar);
+        if (!picture) {
+          picture = new Image();
+          picture.onload = () => this.redraw();
+          picture.src = p.avatar;
+          this.pictures.set(p.avatar, picture);
+        }
+      }
+      return { name: p.name, friend: p.friend, at: p.at, picture, xy: this._xy(p.lat, p.lon) };
+    });
+    this.redraw();
+  }
+
   clearLive() {
     this.live = [];
     this.redraw();
@@ -303,6 +322,33 @@ export class MapView {
         ctx.fill();
       }
       if (this.scale > 0.3) text(p.name, px + 11 * dpr, py, 13, color, 'left');
+    }
+
+    // Other people: magenta ring for a friend, white for anyone else; their picture
+    // if they have one, otherwise their initial. Fades once the news is getting old.
+    for (const p of this.people ?? []) {
+      const px = ox + p.xy[0] * s, py = oy - p.xy[1] * s, r = 13 * dpr;
+      const color = p.friend ? '#ff2bd6' : '#ffffff';
+      ctx.globalAlpha = Date.now() - p.at > 45000 ? 0.45 : 1;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, 7);
+      ctx.fillStyle = '#000';
+      ctx.fill();
+      if (p.picture?.complete && p.picture.naturalWidth) {
+        ctx.save();
+        ctx.clip();
+        ctx.drawImage(p.picture, px - r, py - r, r * 2, r * 2);
+        ctx.restore();
+      } else {
+        text((p.name[0] ?? '?').toUpperCase(), px, py + dpr, 15, color);
+      }
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, 7);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3 * dpr;
+      ctx.stroke();
+      text(p.name, px + r + 5 * dpr, py, 13, color, 'left');
+      ctx.globalAlpha = 1;
     }
 
     if (this.pos) {

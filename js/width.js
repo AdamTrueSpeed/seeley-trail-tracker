@@ -21,7 +21,8 @@ export const VEHICLES = [
   { key: 'walk', name: 'Walking', short: 'Walking', width: 0.45, kind: 'foot', basis: 'average adult shoulder width' },
   { key: 'bike', name: 'Cycling', short: 'Cycling', width: 0.45, kind: 'bike', basis: 'same as walking' },
   { key: 'grizzly', name: 'Yamaha Grizzly', short: 'Grizzly', width: GRIZZLY_WIDTH, kind: 'motor', basis: '48.4 in' },
-  { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', basis: '66.1 in' },
+  // effort 'drive': you sit in it rather than straddle it, which burns less (see activity.js)
+  { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', effort: 'drive', basis: '66.1 in' },
   { key: 'renegade', name: 'Can-Am Renegade', short: 'Renegade', width: 1.22, kind: 'motor', basis: '48 in' },
 ];
 

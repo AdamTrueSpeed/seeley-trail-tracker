@@ -8,9 +8,11 @@ import { buildNetwork } from './merge.js';
 import { buildKml, buildKmz, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
 import { prepareReference, nameSegments, coverage, overlapShare } from './reference.js';
 import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
+import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
+import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf } from './activity.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.6';
+const VERSION = '1.7';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -36,12 +38,21 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const DEFAULTS = {
   threshold: 8, smoothing: 3,             // merge
   maxAcc: 15, minDist: 3, autoPause: true, keepAwake: true, // recording
+  sharing: 'private',                     // who can see my position: 'private' | 'friends' | 'everyone'
+  friends: [],                            // [{ code, name }]
+  weightKg: 80,                           // for the rough calorie figure
   vehicle: 'grizzly',                     // what the last ride was on (see VEHICLES in width.js)
   color: 'orange', showRaw: true, showMerged: true, showRef: true,
 };
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; } };
 const settings = { ...DEFAULTS, ...readJson('tt-settings') };
+settings.friends = [...settings.friends];
 const saveSettings = () => localStorage.setItem('tt-settings', JSON.stringify(settings));
+// A random label for this phone, so other phones can tell two people apart. It is not a secret.
+if (!settings.deviceId) {
+  settings.deviceId = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  saveSettings();
+}
 
 // ---- state ------------------------------------------------------------------
 
@@ -126,12 +137,76 @@ function totalsByMethod(rides) {
   const by = new Map();
   for (const r of rides) {
     const name = methodOf(r).name;
-    const e = by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, time: 0 }).get(name);
+    const e = by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, time: 0, kcal: 0, steps: 0 }).get(name);
     e.rides++;
     e.dist += r.dist ?? 0;
     e.time += Math.max(0, (r.endedAt ?? 0) - (r.startedAt ?? 0));
+    e.kcal += kcalOf(r);
+    e.steps += stepsOf(r) ?? 0;
   }
   return [...by.values()].sort((a, b) => b.dist - a.dist);
+}
+
+// ---- steps and calories ------------------------------------------------------------
+
+/** Rough kcal for a saved ride, worked out from its points and the user's weight. */
+const kcalOf = (ride) => kcalOfRide(state.tracks.get(ride.id) ?? [], methodOf(ride), settings.weightKg);
+
+/** Steps for a ride on foot (counted by the phone, or guessed from distance); null for anything else. */
+function stepsOf(ride) {
+  if (methodOf(ride).kind !== 'foot') return null;
+  return ride.steps ?? stepsFromDistance(ride.dist ?? 0);
+}
+const stepsText = (ride) => {
+  const n = stepsOf(ride);
+  if (n == null) return '';
+  return `${ride.steps == null || ride.stepsEstimated ? '~' : ''}${n.toLocaleString()} steps`;
+};
+const fmtKcal = (kcal) => `~${Math.round(kcal).toLocaleString()} kcal`;
+const fmtClock = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+};
+
+// While a ride is being recorded.
+const activity = { detector: null, stopMotion: null, sensor: false, kcal: 0 };
+
+/** Start counting for the current ride. Call straight after the tap that starts it (iPhones only allow the motion-sensor question then). */
+async function startActivity(ride) {
+  stopActivity();
+  activity.kcal = kcalOf(ride); // not zero when an unfinished ride is being continued
+  activity.sensor = false;
+  if (methodOf(ride).kind !== 'foot') return;
+  const detector = new StepDetector();
+  if (!ride.stepsEstimated) detector.count = ride.steps ?? 0;
+  activity.detector = detector;
+  activity.stopMotion = await watchMotion((x, y, z, t) => {
+    activity.sensor = true; // the phone has a working motion sensor
+    if (tracker.state === 'recording') detector.feed(x, y, z, t);
+  });
+}
+
+function stopActivity() {
+  activity.stopMotion?.();
+  activity.stopMotion = null;
+  activity.detector = null;
+}
+
+/** Keep the ride's own step figure up to date (it is saved with the ride). */
+function noteSteps(ride) {
+  if (methodOf(ride).kind !== 'foot') return;
+  ride.stepsEstimated = !activity.sensor;
+  ride.steps = activity.sensor ? activity.detector.count : stepsFromDistance(tracker.dist);
+}
+
+function updateActivity() {
+  const ride = state.current;
+  $('activity').hidden = !ride;
+  if (!ride) return;
+  noteSteps(ride);
+  $('act-time').textContent = fmtClock(ride.endedAt - ride.startedAt);
+  $('act-steps').textContent = stepsText(ride);
+  $('act-kcal').textContent = fmtKcal(activity.kcal);
 }
 
 /** Quick labels for pins: the names typed most recently on this phone first, then the standard ones. */
@@ -330,6 +405,7 @@ function updateStats() {
   $('st-speed').textContent = v < 10 ? v.toFixed(1) : Math.round(v);
   $('st-dist').textContent = ((state.current ? tracker.dist : 0) / 1000).toFixed(2);
   $('st-pts').textContent = state.current ? tracker.count : 0;
+  updateActivity();
   const acc = $('st-acc'), fix = tracker.lastFix;
   if (!fix || Date.now() - state.fixAt > 10000) {
     acc.textContent = '--';
@@ -471,6 +547,7 @@ async function startRide() {
     id: Date.now(), name: '', by: settings.userName,
     startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0,
   }, vehicle);
+  startActivity(ride); // straight after the tap: an iPhone only lets the motion sensor be asked for then
   await db.put('rides', ride);
   state.rides.push(ride);
   state.tracks.set(ride.id, []);
@@ -492,7 +569,13 @@ function onPoint(p, newSeg) {
   if (!ride) return;
   const segs = state.tracks.get(ride.id);
   if (newSeg || !segs.length) segs.push([]);
-  segs[segs.length - 1].push(p);
+  const seg = segs[segs.length - 1];
+  const prev = seg[seg.length - 1];
+  seg.push(p);
+  if (prev) { // calories for the stretch just covered (a long gap means a stop, which is not counted)
+    const dt = (p.t - prev.t) / 1000;
+    if (dt > 0 && dt <= 15) activity.kcal += kcalFor(effortOf(methodOf(ride)), (p.spd ?? 0) * 3.6, dt, settings.weightKg);
+  }
   rideMap.addLive(p.lat, p.lon, newSeg);
   if (tracker.count === 1) ride.startedAt = p.t;
   ride.endedAt = p.t;
@@ -511,6 +594,10 @@ function onFix(fix, verdict) {
   if (verdict === 'ok') state.goodAt = state.fixAt;
   rideMap.setPosition(fix.lat, fix.lon, fix.acc, fix.spd != null && fix.spd > 0.7 ? fix.hdg : null, verdict === 'ok');
   if (state.view === 'net') netMap.setPosition(fix.lat, fix.lon, fix.acc, null, verdict === 'ok');
+  // Does nothing at all in private mode.
+  if (verdict === 'ok') {
+    share.update(fix, { method: methodOf(state.current ?? { vehicle: settings.vehicle }).short, rec: tracker.state === 'recording' }).catch(() => {});
+  }
   updateStats();
   updateStatus();
 }
@@ -519,6 +606,8 @@ async function finishRide() {
   const ride = state.current;
   if (!ride) return;
   const n = doneRides().length + 1;
+  noteSteps(ride);
+  const effort = [stepsText(ride), fmtKcal(activity.kcal)].filter(Boolean).join(' · ');
   const res = tracker.count < 2
     ? await ask({
       title: 'Nothing recorded yet',
@@ -527,7 +616,7 @@ async function finishRide() {
     })
     : await ask({
       title: 'Save this ride',
-      body: `${fmtDist(tracker.dist)} · ${tracker.count} points · ${methodOf(ride).name}. Give it a name, such as the trail or loop you covered.`,
+      body: `${fmtDist(tracker.dist)} · ${methodOf(ride).name} · ${effort}. Give it a name, such as the trail or loop you covered.`,
       input: { value: `Ride ${n}`, placeholder: 'e.g. Ride 1 - North Loop' },
       buttons: [
         { label: 'SAVE RIDE', value: 'save', cls: 'go' },
@@ -544,6 +633,8 @@ async function finishRide() {
     });
     if (sure.button !== 'yes') return;
   }
+  noteSteps(ride); // steps taken while the question was on screen
+  stopActivity();
   tracker.stop();
   setWake(false);
   state.current = null;
@@ -739,6 +830,7 @@ async function recoverUnfinished() {
       for (const s of segs) s.forEach((p, i) => rideMap.addLive(p.lat, p.lon, i === 0));
       startGps();
       tracker.start({ seg: m.lastSeg, dist: m.dist, count: m.count });
+      startActivity(ride);
       setWake(true);
     } else {
       ride.name ||= `Ride ${doneRides().length + 1} (recovered)`;
@@ -759,7 +851,7 @@ function renderRides() {
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
       <div><div class="name">${esc(r.name)}</div>
-        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
+        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${[stepsText(r), fmtKcal(kcalOf(r))].filter(Boolean).join(' · ')}</div></div>
       <div class="acts four"><button data-act="rename">Rename</button><button data-act="vehicle">Method</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
@@ -768,13 +860,14 @@ function renderRides() {
   // Every saved ride counts here, whether or not it is switched into the trail network.
   const totals = totalsByMethod(rides);
   if (totals.length > 1) {
-    totals.push(totals.reduce((a, t) => ({ ...a, rides: a.rides + t.rides, dist: a.dist + t.dist, time: a.time + t.time }),
-      { name: 'All travel', rides: 0, dist: 0, time: 0, all: true }));
+    totals.push(totals.reduce((a, t) => ({
+      ...a, rides: a.rides + t.rides, dist: a.dist + t.dist, time: a.time + t.time, kcal: a.kcal + t.kcal, steps: a.steps + t.steps,
+    }), { name: 'All travel', rides: 0, dist: 0, time: 0, kcal: 0, steps: 0, all: true }));
   }
   $('totals').hidden = !rides.length;
   $('totals-list').innerHTML = totals.map((t) => `
     <li class="${t.all ? 'all' : ''}"><span class="dot" style="background:${t.all ? '#fff' : 'var(--live)'}"></span>
-      <span>${esc(t.name)} <span class="sub">${t.rides} ride${t.rides === 1 ? '' : 's'} · ${fmtDur(t.time)}</span></span>
+      <span>${esc(t.name)} <span class="sub">${t.rides} ride${t.rides === 1 ? '' : 's'} · ${fmtDur(t.time)} · ${fmtKcal(t.kcal)}${t.steps ? ` · ${t.steps.toLocaleString()} steps` : ''}</span></span>
       <span class="pct">${fmtDist(t.dist)}</span></li>`).join('');
 
   $('pin-list').replaceChildren(...state.pins.map((p) => {
@@ -1131,6 +1224,12 @@ function renderSettings() {
   const photoCount = state.pins.filter((p) => p.photo).length;
   $('storage-info').textContent = `${doneRides().length} ride(s), ${points} GPS points, ${state.pins.length - photoCount} pin(s) and ${photoCount} photo(s) are stored on this phone. A backup file holds all of it, pictures included.`;
   $('name-val').textContent = settings.userName || 'Not set yet';
+  $('avatar-img').src = settings.avatar ?? blankAvatar();
+  $('btn-avatar').textContent = settings.avatar ? 'Change your picture' : 'Choose your picture';
+  $('btn-avatar-clear').hidden = !settings.avatar;
+  $('weight').value = settings.weightKg;
+  $('weight-val').textContent = `${settings.weightKg} kg (${Math.round(settings.weightKg * 2.2046)} lb)`;
+  renderSharing();
   const checked = update.checkedAt ? ` (checked ${new Date(update.checkedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })})` : '';
   $('version').textContent = `Version ${VERSION}${DEMO ? ' · demo mode' : ''} · ${{
     unknown: 'not checked yet',
@@ -1178,6 +1277,220 @@ async function askName(first) {
   if (res.button === 'save' && res.text) await setUserName(res.text.slice(0, 40));
 }
 $('btn-name').addEventListener('click', () => askName(false));
+
+// ---- profile picture ---------------------------------------------------------------
+
+/** What to show when no picture has been chosen: the user's initial on a plain disc. */
+function blankAvatar() {
+  const letter = esc((settings.userName || '?')[0].toUpperCase());
+  return `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" fill="#1b2530"/>`
+    + `<text x="48" y="64" font-family="sans-serif" font-size="52" font-weight="700" fill="#18ffff" text-anchor="middle">${letter}</text></svg>`)}`;
+}
+
+/** A picture cut to a centred square and scaled down, as a small JPEG data URL. */
+async function squarePicture(file, size) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('not a picture'));
+      img.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    c.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+    return c.toDataURL('image/jpeg', 0.8);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+$('btn-avatar').addEventListener('click', () => $('avatar-file').click());
+$('avatar-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    settings.avatar = await squarePicture(file, 96);
+  } catch {
+    toast('That picture could not be read.', 5000);
+    return;
+  }
+  saveSettings();
+  renderSettings();
+  applySharing(); // friends see the new picture
+});
+$('btn-avatar-clear').addEventListener('click', () => {
+  delete settings.avatar;
+  saveSettings();
+  renderSettings();
+  applySharing();
+});
+
+// ---- live sharing: private unless the user chooses otherwise ---------------------------
+//
+// See share.js for how it works. In private mode nothing is connected and
+// nothing is sent.
+
+const MODES = {
+  private: { label: 'Private', pill: 'PRIVATE', note: 'Nothing leaves this phone. Nobody can see you, and you see nobody.' },
+  friends: { label: 'Friends only', pill: 'FRIENDS', note: 'People you have given your friend code to can see you while this app is open.' },
+  everyone: { label: 'Everyone nearby', pill: 'EVERYONE', note: 'Anyone using this app within roughly 5 km can see you while this app is open.' },
+};
+const share = new LiveShare({ onChange: () => renderPeople() });
+
+function myCode() {
+  if (!settings.friendCode) {
+    settings.friendCode = newCode();
+    saveSettings();
+  }
+  return settings.friendCode;
+}
+
+function applySharing() {
+  return share.configure({
+    mode: settings.sharing,
+    me: { id: settings.deviceId, name: settings.userName || 'Someone', code: myCode(), avatar: settings.avatar ?? null },
+    friends: settings.friends,
+  }).then(renderPeople, () => {});
+}
+
+function renderPeople() {
+  const people = share.list();
+  rideMap.setPeople(people);
+  const pill = $('share-pill');
+  pill.className = `sharepill ${settings.sharing}`;
+  pill.textContent = settings.sharing === 'private' ? MODES.private.pill
+    : `${MODES[settings.sharing].pill} · ${share.connected ? `${people.length} on map` : 'connecting…'}`;
+  // A friend's name arrives with their position: remember it for the list.
+  let learned = false;
+  for (const p of people) {
+    const friend = settings.friends.find((f) => f.code === p.code);
+    if (friend && friend.name !== p.name) { friend.name = p.name; learned = true; }
+  }
+  if (learned) saveSettings();
+  if (state.view === 'settings') renderSharing();
+}
+
+function renderSharing() {
+  const people = share.list(), me = tracker?.good;
+  const where = (p) => `${me ? `${fmtDist(haversine(me.lat, me.lon, p.lat, p.lon))} away · ` : ''}${Math.max(0, Math.round((Date.now() - p.at) / 1000))} s ago`;
+  $('mode-val').textContent = MODES[settings.sharing].label;
+  $('mode-note').textContent = MODES[settings.sharing].note;
+  $('code-val').textContent = formatCode(myCode());
+  $('friend-list').innerHTML = settings.friends.map((f) => {
+    const p = people.find((x) => x.code === f.code);
+    const status = p ? `on the map now · ${where(p)}` : settings.sharing === 'private' ? 'hidden while you are in private mode' : 'not sharing right now';
+    return `<li data-code="${f.code}"><span class="dot" style="background:${p ? '#ff2bd6' : '#555'}"></span>
+      <span>${esc(f.name || `Friend ${formatCode(f.code).slice(0, 4)}…`)} <span class="sub">${status}</span></span>
+      <button class="mini del" data-act="remove">Remove</button></li>`;
+  }).join('');
+  $('people-details').hidden = !people.length;
+  $('people-details').querySelector('summary').textContent = `On the map now (${people.length})`;
+  $('people-list').innerHTML = people.map((p) => `
+    <li><span class="dot" style="background:${p.friend ? '#ff2bd6' : '#fff'}"></span>
+      <span>${esc(p.name)} <span class="sub">${p.friend ? 'friend' : 'nearby'}${p.method ? ` · ${esc(p.method)}` : ''}${p.rec ? ' · recording' : ''}</span></span>
+      <span class="pct">${where(p)}</span></li>`).join('');
+}
+
+async function chooseSharing() {
+  const res = await ask({
+    title: 'Who can see where you are?',
+    body: 'Your position is only sent while this app is open. It is scrambled on this phone before it leaves, and travels through a public relay service on the internet.',
+    buttons: [
+      ...Object.entries(MODES).map(([key, m]) => ({ label: m.label, value: key, cls: key === settings.sharing ? 'go' : 'ghost' })),
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  if (res.button === 'cancel' || res.button === settings.sharing) return;
+  if (res.button === 'everyone') {
+    const sure = await ask({
+      title: 'Share with everyone nearby?',
+      body: 'Anyone using this app within roughly 5 km, including people you do not know, will see your name, picture and position on their map while your app is open.',
+      buttons: [{ label: 'Keep it to friends', value: 'friends', cls: 'go' }, { label: 'Yes, everyone nearby', value: 'everyone', cls: 'warn' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (sure.button === 'cancel') return;
+    res.button = sure.button;
+  }
+  settings.sharing = res.button;
+  saveSettings();
+  await applySharing();
+  if (state.view === 'settings') renderSettings();
+  toast(`Sharing: ${MODES[settings.sharing].label}`);
+}
+$('share-pill').addEventListener('click', chooseSharing);
+$('btn-mode').addEventListener('click', chooseSharing);
+
+async function addFriend(typed = '') {
+  const res = await ask({
+    title: 'Add a friend\'s code',
+    body: 'Type the 12-character code your friend sent you. You will see them on your map whenever they are sharing. For them to see you, send them your code as well.',
+    input: { value: typed, placeholder: 'XXXX-XXXX-XXXX' },
+    buttons: [{ label: 'ADD FRIEND', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button !== 'save') return;
+  const code = cleanCode(res.text);
+  if (!code) { toast('That does not look like a friend code: it is 12 letters and numbers.', 5000); return; }
+  if (code === myCode()) { toast('That is your own code.'); return; }
+  if (settings.friends.some((f) => f.code === code)) { toast('That friend is already on your list.'); return; }
+  settings.friends.push({ code });
+  saveSettings();
+  await applySharing();
+  if (state.view === 'settings') renderSettings();
+  toast(settings.sharing === 'private' ? 'Friend added. Turn sharing on to see each other.' : 'Friend added.', 4500);
+}
+$('btn-friend-add').addEventListener('click', () => addFriend());
+
+$('friend-list').addEventListener('click', async (e) => {
+  if (!e.target.closest('[data-act=remove]')) return;
+  const friend = settings.friends.find((f) => f.code === e.target.closest('li')?.dataset.code);
+  if (!friend) return;
+  const res = await ask({
+    title: `Remove ${friend.name || 'this friend'}?`,
+    body: 'You will stop seeing them. They can still see you if they have your code: to stop that, make yourself a new code.',
+    buttons: [{ label: 'Keep', value: 'cancel', cls: 'go' }, { label: 'Remove', value: 'yes', cls: 'stop' }],
+  });
+  if (res.button !== 'yes') return;
+  settings.friends = settings.friends.filter((f) => f !== friend);
+  saveSettings();
+  await applySharing();
+  renderSettings();
+});
+
+$('btn-code-share').addEventListener('click', async () => {
+  const code = formatCode(myCode());
+  const message = {
+    title: 'Seeley Trail Tracker friend code',
+    text: `Add me on Seeley Trail Tracker so we can see each other on the trail map. My friend code is ${code} (Settings > Friends and sharing > Add a friend's code).`,
+    url: `${SHARE_URL}#friend=${code}`,
+  };
+  if (navigator.share) {
+    try { await navigator.share(message); } catch { /* cancelled */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(`${message.text} ${message.url}`);
+    toast('Copied. Paste it into a message to your friend.', 4500);
+  } catch {
+    toast(`Your code is ${code}`, 8000);
+  }
+});
+
+$('btn-code-new').addEventListener('click', async () => {
+  const res = await ask({
+    title: 'Make a new friend code?',
+    body: 'Everyone who has your current code stops seeing you. You will need to send the new code to the friends you still want.',
+    buttons: [{ label: 'Keep my code', value: 'cancel', cls: 'go' }, { label: 'New code', value: 'yes', cls: 'stop' }],
+  });
+  if (res.button !== 'yes') return;
+  settings.friendCode = newCode();
+  saveSettings();
+  await applySharing();
+  renderSettings();
+});
 
 $('btn-add-method').addEventListener('click', addMethod);
 $('veh-list').addEventListener('click', async (e) => {
@@ -1274,6 +1587,7 @@ bindSetting('thr', 'threshold', { after: remergeSoon });
 bindSetting('smo', 'smoothing', { after: remergeSoon });
 bindSetting('acc', 'maxAcc');
 bindSetting('mind', 'minDist');
+bindSetting('weight', 'weightKg');
 bindSetting('autopause', 'autoPause', { event: 'change' });
 bindSetting('awake', 'keepAwake', { event: 'change', after: () => setWake(!!state.current && settings.keepAwake) });
 bindSetting('show-raw', 'showRaw', { event: 'change', after: () => renderNetwork(false) });
@@ -1505,10 +1819,12 @@ document.addEventListener('visibilitychange', () => {
   if (!tracker) return;
   if (document.visibilityState === 'hidden') {
     state.hiddenAt = Date.now();
+    share.pause(); // no position goes out while the app is in the background
     if (state.current) db.put('rides', state.current);
     else tracker.unwatch(); // save the battery when nothing is being recorded
     return;
   }
+  share.resume();
   if (state.gpsWanted) tracker.watch();
   if (state.current) {
     setWake(true);
@@ -1522,6 +1838,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 setInterval(() => { if (tracker) { updateStats(); updateStatus(); } }, 2000);
+setInterval(() => { if (tracker && settings.sharing !== 'private') renderPeople(); }, 10000); // drops people who have gone quiet
 
 // ---- start-up -------------------------------------------------------------------
 
@@ -1562,6 +1879,19 @@ async function boot() {
   await recoverUnfinished();
   updateRideUi();
   if (!settings.userName) await askName(true);
+
+  // Private by default: this connects to nothing unless the user has chosen to share.
+  await applySharing();
+  window.addEventListener('hashchange', checkInvite); // the link was tapped while the app was already open
+  await checkInvite();
+}
+
+/** Opened from a friend's "add me" link (…#friend=CODE)? Offer to add them. */
+async function checkInvite() {
+  const invite = /[#&]friend=([^&]+)/.exec(location.hash);
+  if (!invite || $('dlg').open) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  await addFriend(decodeURIComponent(invite[1]));
 }
 
 boot().catch((err) => {

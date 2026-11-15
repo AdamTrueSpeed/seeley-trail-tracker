@@ -33,9 +33,13 @@
       <div class="stat"><b id="st-acc">--</b><i>GPS &plusmn; m</i></div>
       <div class="stat"><b id="st-pts">0</b><i>points</i></div>
     </div>
+    <div id="activity" class="activity" hidden>
+      <span id="act-time"></span><span id="act-steps"></span><span id="act-kcal"></span>
+    </div>
     <div class="mapwrap">
       <canvas id="map-ride" class="map"></canvas>
       <div id="status" class="status wait">Starting…</div>
+      <button id="share-pill" class="sharepill">PRIVATE</button>
       <div id="demo-flag" class="status demo" hidden>DEMO – simulated GPS</div>
       <div class="mapbtns">
         <button id="ride-in" aria-label="Zoom in">+</button>
@@ -130,7 +134,35 @@
   <!-- ===== Settings ===== -->
   <section class="view page" id="view-settings" hidden>
     <h1>You</h1>
-    <div class="toggle"><span>Your name<small id="name-val"></small><small>Saved with every ride and pin you record on this phone.</small></span><button id="btn-name" class="mid ghost">Change</button></div>
+    <div class="toggle">
+      <img id="avatar-img" class="avatar" alt="">
+      <span>Your name<small id="name-val"></small><small>Saved with every ride and pin you record on this phone.</small></span>
+      <button id="btn-name" class="mid ghost">Change</button>
+    </div>
+    <div class="btnrow">
+      <button id="btn-avatar" class="mid">Choose your picture</button>
+      <button id="btn-avatar-clear" class="mid ghost" hidden>Remove picture</button>
+    </div>
+    <input type="file" id="avatar-file" accept="image/*" hidden>
+    <div class="slider">
+      <div class="row"><span>Your weight</span><b id="weight-val"></b></div>
+      <input type="range" id="weight" min="35" max="160" step="1">
+      <small>Only used for the rough calorie figure. It stays on this phone.</small>
+    </div>
+
+    <h1>Friends and sharing</h1>
+    <div class="toggle"><span>Who can see where I am<small id="mode-val"></small><small id="mode-note"></small></span><button id="btn-mode" class="mid ghost">Change</button></div>
+    <div class="toggle"><span>My friend code<small id="code-val"></small><small>Anyone you give this to can see you while you are sharing. Give it only to people you trust.</small></span></div>
+    <div class="btnrow">
+      <button id="btn-code-share" class="mid">Send my code to a friend</button>
+      <button id="btn-code-new" class="mid ghost">New code</button>
+    </div>
+    <ul id="friend-list" class="coverage card"></ul>
+    <div class="btnrow"><button id="btn-friend-add" class="mid">Add a friend's code</button></div>
+    <details id="people-details" hidden>
+      <summary>On the map now</summary>
+      <ul id="people-list" class="coverage"></ul>
+    </details>
 
     <h1>Share this app</h1>
     <p class="hint">Friends can scan this with their phone's camera, on Android or iPhone, to open the app and install it. Their rides stay on their own phone.</p>
