@@ -5,11 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Seeley Trails">
   <meta name="application-name" content="Seeley Trail Tracker">
   <title>Seeley Trail Tracker</title>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -18,6 +21,12 @@
   <!-- ===== Ride ===== -->
   <section class="view" id="view-ride">
     <button id="btn-install-top" class="installbar" hidden>TAP HERE TO INSTALL THIS APP ON YOUR PHONE</button>
+    <div id="ios-install" class="installbar ios" hidden>
+      <span><b>To install on iPhone:</b> tap Share
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M8 7l4-4 4 4M7 11H5v10h14V11h-2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        in Safari (it may be under the &bull;&bull;&bull; button), then <b>Add to Home Screen</b>. Do this before recording a ride.</span>
+      <button id="ios-install-close" aria-label="Hide this">&times;</button>
+    </div>
     <div class="stats">
       <div class="stat"><b id="st-speed">0</b><i>km/h</i></div>
       <div class="stat"><b id="st-dist">0.00</b><i>km ridden</i></div>
@@ -140,7 +149,8 @@
     </div>
     <button id="btn-install" class="mid" hidden>Install on this phone</button>
     <ul class="tips">
-      <li>Keep this app open and the screen on while riding. Android stops GPS for web apps when the screen is off or another app is in front.</li>
+      <li>Keep this app open and the screen on while riding. Phones stop giving GPS to web apps when the screen is off or another app is in front.</li>
+      <li id="tip-ios" hidden>iPhone: if GPS shows as blocked or stays weak, open the iPhone's Settings &gt; Privacy &amp; Security &gt; Location Services &gt; Safari Websites, choose While Using the App and turn on Precise Location. If the screen still dims during a ride, set Display &amp; Brightness &gt; Auto-Lock to Never while riding.</li>
       <li>Wait for the GPS number at the top to turn green before you set off.</li>
       <li>Everything is stored on this phone only. Save a backup file now and then.</li>
     </ul>

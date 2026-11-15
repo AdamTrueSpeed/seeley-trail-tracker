@@ -105,9 +105,12 @@ export class Tracker {
   _onPosition(pos) {
     const c = pos.coords;
     const real = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    const notNegative = (v) => (real(v) != null && v >= 0 ? v : null); // iPhones can report -1 for "unknown"
+    // Use the fix's own time unless it is on a different clock from the phone's.
+    const t = Math.abs(pos.timestamp - Date.now()) < 86400000 ? pos.timestamp : Date.now();
     const fix = {
       lat: c.latitude, lon: c.longitude, alt: real(c.altitude), acc: c.accuracy,
-      spd: real(c.speed), hdg: real(c.heading), t: pos.timestamp, v: 0,
+      spd: notNegative(c.speed), hdg: notNegative(c.heading), t, v: 0,
     };
     const cfg = this.cfg();
     this.error = null;

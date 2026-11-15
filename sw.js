@@ -2,12 +2,12 @@
 // opened, so it starts with no signal. When there is signal the newest version
 // is fetched; when there is not (or it is slow) the saved copy is used.
 
-const CACHE = 'seeley-trail-tracker-v1';
+const CACHE = 'seeley-trail-tracker-v2';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.json',
   'js/app.js', 'js/db.js', 'js/demo.js', 'js/geo.js', 'js/kml.js',
   'js/mapview.js', 'js/merge.js', 'js/reference.js', 'js/tracker.js',
-  'icons/icon-192.png', 'icons/icon-512.png',
+  'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 const OPTIONAL = ['reference.kml'];
 

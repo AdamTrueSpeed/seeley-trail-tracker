@@ -9,8 +9,17 @@ import { buildKml, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
 import { prepareReference, nameSegments, coverage } from './reference.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.0';
-const DEMO = new URLSearchParams(location.search).has('demo');
+const VERSION = '1.1';
+const PARAMS = new URLSearchParams(location.search);
+const DEMO = PARAMS.has('demo');
+// iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
+// to the address forces the iPhone behaviour, for trying it on a computer.
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || PARAMS.has('ios');
+const INSTALLED = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+const SCREEN_TIP = IOS
+  ? 'This iPhone would not let the app keep the screen on. While riding, set Settings > Display & Brightness > Auto-Lock to Never.'
+  : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.';
 const PIN_LABELS = ['Hazard', 'Bridge', 'Intersection', 'Trailhead', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint'];
 const SAVED_COLOR = '#2fbf9f';
 const RAW_COLOR = '#8a97a6';
@@ -127,6 +136,27 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
+/**
+ * Hand a file to the user. On an iPhone that is the share sheet (Save to
+ * Files, Google Earth, AirDrop, Mail), because downloads from an installed
+ * web app are unreliable there; everywhere else it is a normal download.
+ * Resolves 'shared', 'cancelled' or 'downloaded'.
+ */
+async function saveFile(name, text, type) {
+  const file = new File([text], name, { type });
+  if (IOS && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      return 'shared';
+    } catch (err) {
+      if (err.name === 'AbortError') return 'cancelled';
+      // anything else: fall back to a download
+    }
+  }
+  download(name, text, type);
+  return 'downloaded';
+}
+
 // ---- loading ----------------------------------------------------------------
 
 function toSegments(points) {
@@ -238,9 +268,11 @@ function updateRideUi() {
 }
 
 let wake = null;
+/** Hold (or let go of) the screen wake lock. Resolves false if the screen could not be kept on. */
 async function setWake(on) {
   try {
-    if (on && settings.keepAwake && !wake && 'wakeLock' in navigator && document.visibilityState === 'visible') {
+    if (on && settings.keepAwake && !wake && document.visibilityState === 'visible') {
+      if (!('wakeLock' in navigator)) return false;
       wake = await navigator.wakeLock.request('screen');
       wake.addEventListener('release', () => { wake = null; });
     } else if (!on && wake) {
@@ -248,7 +280,10 @@ async function setWake(on) {
       wake = null;
       await w.release();
     }
-  } catch { /* refused (e.g. battery saver): the Settings tips cover the manual fallback */ }
+    return true;
+  } catch {
+    return false; // refused, e.g. by battery saver
+  }
 }
 
 function startGps() {
@@ -269,10 +304,9 @@ async function startRide() {
   startGps();
   tracker.start();
   rideMap.center();
-  setWake(true);
+  notice('');
+  setWake(true).then((ok) => { if (!ok) notice(SCREEN_TIP); });
   keepStorage();
-  notice(settings.keepAwake && !('wakeLock' in navigator)
-    ? 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.' : '');
   updateRideUi();
 }
 
@@ -337,6 +371,7 @@ async function finishRide() {
   tracker.stop();
   setWake(false);
   state.current = null;
+  state.network = null;
   if (res.button === 'discard') {
     await db.deleteRide(ride.id);
     state.rides = state.rides.filter((r) => r !== ride);
@@ -347,7 +382,6 @@ async function finishRide() {
     await db.put('rides', ride);
     toast(`Saved "${ride.name}"`);
   }
-  state.network = null;
   rideMap.clearLive();
   refreshRideMap();
   notice('');
@@ -465,12 +499,11 @@ $('ride-list').addEventListener('click', async (e) => {
       buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'DELETE RIDE', value: 'yes', cls: 'stop' }],
     });
     if (res.button !== 'yes') return;
-    await db.deleteRide(ride.id);
     state.rides = state.rides.filter((r) => r !== ride);
     state.tracks.delete(ride.id);
   }
-  if (act !== 'delete') await db.put('rides', ride);
   state.network = null;
+  if (act === 'delete') await db.deleteRide(ride.id); else await db.put('rides', ride);
   renderRides();
   refreshRideMap();
 });
@@ -579,10 +612,11 @@ function makeKml() {
   return { name, text, type: 'application/vnd.google-earth.kml+xml' };
 }
 
-$('btn-export').addEventListener('click', () => {
-  if (!state.network?.segments.length) { toast('Nothing to export yet – record a ride first.'); return; }
+$('btn-export').addEventListener('click', async () => {
+  if (!state.network) computeNetwork(); // a ride was saved or changed since the last merge
+  if (!state.network.segments.length) { toast('Nothing to export yet – record a ride first.'); return; }
   const kml = makeKml();
-  download(kml.name, kml.text, kml.type);
+  if (await saveFile(kml.name, kml.text, kml.type) !== 'downloaded') return;
   state.lastKml = new File([kml.text], kml.name, { type: kml.type });
   $('btn-share').hidden = !navigator.canShare?.({ files: [state.lastKml] });
   toast(`Saved ${kml.name} to Downloads`, 4500);
@@ -679,14 +713,15 @@ $('btn-ref-clear').addEventListener('click', async () => {
   if (res.button === 'yes') await setReference(null);
 });
 
-$('btn-backup').addEventListener('click', () => {
+$('btn-backup').addEventListener('click', async () => {
   const data = {
     app: 'trail-tracker', format: 1, exportedAt: new Date().toISOString(), settings,
     rides: state.rides.map((r) => ({ ...r, points: (state.tracks.get(r.id) ?? []).flat() })),
     pins: state.pins,
   };
-  download(`trail-tracker-backup_${stamp()}.json`, JSON.stringify(data), 'application/json');
-  toast('Backup saved to Downloads');
+  if (await saveFile(`trail-tracker-backup_${stamp()}.json`, JSON.stringify(data), 'application/json') === 'downloaded') {
+    toast('Backup saved to Downloads');
+  }
 });
 $('btn-restore').addEventListener('click', () => $('backup-file').click());
 $('backup-file').addEventListener('change', async (e) => {
@@ -733,6 +768,22 @@ for (const id of ['btn-install', 'btn-install-top']) {
     installPrompt = null;
     showInstall(false);
   });
+}
+
+// An iPhone has no install button a page can offer: it is done from Safari's
+// Share menu, so show how. Rides recorded in a Safari tab are not carried over
+// to the installed app, which is why the hint says to install first.
+if (IOS) {
+  $('tip-ios').hidden = false;
+  $('ios-install').hidden = INSTALLED || !!localStorage.getItem('tt-ios-hint-off');
+  $('ios-install-close').addEventListener('click', () => {
+    localStorage.setItem('tt-ios-hint-off', '1');
+    $('ios-install').hidden = true;
+  });
+  // The iPhone file picker greys out file types it does not recognise (KML, KMZ).
+  for (const id of ['ref-file', 'backup-file']) $(id).removeAttribute('accept');
+  // Stop a two-finger pinch from zooming the whole page instead of the map.
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
 }
 
 // ---- navigation ---------------------------------------------------------------
