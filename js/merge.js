@@ -12,7 +12,7 @@ import { makeProjection, haversine, rdp, resample, clamp } from './geo.js';
 /**
  * @param tracks [{ name, segments: [[{lat, lon, alt, acc}]] }] in the order ridden
  * @param opts   { threshold: metres, smoothing: 0..10 }
- * @returns { segments: [{ id, points, length, passes, spread, sources, rides }], stats }
+ * @returns { segments: [{ id, points, length, passes, spread, sources, shares, rides }], stats }
  *          spread = { passes, range, sd, acc, length }: how many passes were compared,
  *          the side-to-side distance between the outermost two, their standard
  *          deviation, the phones' average reported GPS accuracy and the segment
@@ -404,12 +404,12 @@ export function buildNetwork(tracks, opts = {}) {
     const xs = e.map((q) => gx[q]), ys = e.map((q) => gy[q]);
     const keep = rdp(xs, ys, eps);
     const points = [];
-    const users = new Set();
+    const users = new Map(); // track -> how many of this segment's nodes it went over
     let passes = 0;
     for (let m = 0; m < e.length; m++) {
       const q = e[m];
       passes += w[q];
-      for (const ti of nUsers[q]) users.add(ti);
+      for (const ti of nUsers[q]) users.set(ti, (users.get(ti) ?? 0) + 1);
       if (keep[m]) {
         points.push({
           lat: proj.lat(ys[m]),
@@ -448,8 +448,11 @@ export function buildNetwork(tracks, opts = {}) {
       length,
       spread, // see width.js
       passes: Math.round(passes / e.length),
-      sources: [...users].sort((a, b) => a - b), // indexes into `tracks`
-      rides: [...users].sort((a, b) => a - b).map((ti) => tracks[ti].name),
+      // Indexes into `tracks`, with the share of the segment each one covered
+      // (a ride that only crossed at a junction has a tiny share).
+      sources: [...users.keys()].sort((a, b) => a - b),
+      shares: [...users.keys()].sort((a, b) => a - b).map((ti) => users.get(ti) / e.length),
+      rides: [...users.keys()].sort((a, b) => a - b).map((ti) => tracks[ti].name),
     };
   });
 

@@ -13,6 +13,22 @@
 export const GRIZZLY_WIDTH = 1.23;
 
 /**
+ * What a ride can be made on. `width` is the overall width in metres, taken
+ * to be centred on the phone. `kind` sets how the GPS filters behave (a walker
+ * is slower and stops more gently than a machine).
+ */
+export const VEHICLES = [
+  { key: 'walk', name: 'Walking', short: 'Walking', width: 0.45, kind: 'foot', basis: 'average adult shoulder width' },
+  { key: 'bike', name: 'Cycling', short: 'Cycling', width: 0.45, kind: 'bike', basis: 'same as walking' },
+  { key: 'grizzly', name: 'Yamaha Grizzly', short: 'Grizzly', width: GRIZZLY_WIDTH, kind: 'motor', basis: '48.4 in' },
+  { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', basis: '66.1 in' },
+  { key: 'renegade', name: 'Can-Am Renegade', short: 'Renegade', width: 1.22, kind: 'motor', basis: '48 in' },
+];
+
+/** Rides recorded before the app asked were taken to be on the Grizzly. */
+export const vehicleOf = (key) => VEHICLES.find((v) => v.key === key) ?? VEHICLES.find((v) => v.key === 'grizzly');
+
+/**
  * @param spread  { passes, range, sd, acc, length } from buildNetwork (metres)
  * @param vehicle vehicle width in metres
  * @returns { width, swept, passes, range, acc, vehicle, basis }
@@ -54,15 +70,16 @@ export function widthLabel(w) {
   return `about ${m(w.width)} wide${w.basis === 'rough' ? ' (rough)' : ''}`;
 }
 
-/** A full sentence explaining where the figure came from. */
+/** A full sentence explaining where the figure came from. `w.via` names the widest thing that went through. */
 export function widthNote(w) {
+  const widest = w.via ? `the widest thing through it (${w.via})` : 'the widest thing through it';
   switch (w.basis) {
     case 'single':
-      return 'Ridden once, so all that is known is that the vehicle fitted.';
+      return `Covered once, so all that is known is that ${widest} fitted.`;
     case 'gps-limited':
-      return `The ${w.passes} passes ran ${m(w.range)} apart, which GPS error (about ±${Math.round(w.acc)} m) fully explains, so only the vehicle width can be claimed.`;
+      return `The ${w.passes} passes ran ${m(w.range)} apart, which GPS error (about ±${Math.round(w.acc)} m) fully explains, so only the width of ${widest} can be claimed.`;
     case 'uncorrected':
-      return `Outermost of ${w.passes} passes plus the vehicle. No GPS accuracy was recorded, so nothing was taken off for GPS error.`;
+      return `Outermost of ${w.passes} passes plus the width of ${widest}. No GPS accuracy was recorded, so nothing was taken off for GPS error.`;
     default:
       return `The ${w.passes} passes ran ${m(w.range)} apart, more than GPS error (about ±${Math.round(w.acc)} m) explains.`
         + (w.basis === 'rough' ? ' Only a few passes: ride it again to firm this up.' : '');

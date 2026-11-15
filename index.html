@@ -103,7 +103,7 @@
       <details id="seg-details" hidden>
         <summary>Trail segments in the network</summary>
         <ul id="seg-list" class="coverage"></ul>
-        <p class="hint">Width is a rough guide: your vehicle's width, plus how far apart your passes ran once GPS error is allowed for. A phone's GPS is only good to a few metres, so an ordinary trail shows as vehicle width ("GPS-limited") and only wide stretches read wider. More passes make it firmer.</p>
+        <p class="hint">Width is a rough guide: the width of the widest thing that has travelled the segment, plus how far apart the passes ran once GPS error is allowed for. A phone's GPS is only good to a few metres, so an ordinary trail shows as that width alone ("GPS-limited") and only wide stretches read wider. More passes make it firmer.</p>
       </details>
       <details id="who-details" hidden>
         <summary>Contributors</summary>
@@ -132,11 +132,11 @@
     <label class="toggle"><span>Keep the screen on while riding<small>Needed: the phone stops giving GPS to the app when the screen turns off.</small></span><input type="checkbox" id="awake"></label>
 
     <h1>Trail width</h1>
-    <div class="slider">
-      <div class="row"><span>Vehicle width</span><b id="veh-val"></b></div>
-      <input type="range" id="veh" min="0.6" max="2.5" step="0.01">
-      <small>Each pass is taken to clear a strip this wide, centred on the rider. A late-model Yamaha Grizzly is 1.23 m (48 in).</small>
-    </div>
+    <p class="hint">You pick what you are on each time you press START RIDE. Each pass counts as a strip this wide, centred on the phone. To change it for a saved ride, use its <b>Vehicle</b> button under Saved rides.</p>
+    <details open>
+      <summary>Widths used</summary>
+      <ul id="veh-list" class="coverage"></ul>
+    </details>
 
     <h1>Existing trail map</h1>
     <p id="ref-info" class="hint"></p>

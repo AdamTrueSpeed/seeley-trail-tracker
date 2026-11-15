@@ -7,10 +7,10 @@ import { MapView } from './mapview.js';
 import { buildNetwork } from './merge.js';
 import { buildKml, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
 import { prepareReference, nameSegments, coverage } from './reference.js';
-import { estimateWidth, widthLabel, GRIZZLY_WIDTH } from './width.js';
+import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.3'; // keep in step with version.json (tools/check-release.mjs checks it)
+const VERSION = '1.4'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -33,7 +33,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const DEFAULTS = {
   threshold: 8, smoothing: 3,             // merge
   maxAcc: 15, minDist: 3, autoPause: true, keepAwake: true, // recording
-  vehicleWidth: GRIZZLY_WIDTH,            // metres; the phone is taken to ride on the centre line
+  vehicle: 'grizzly',                     // what the last ride was on (see VEHICLES in width.js)
   color: 'orange', showRaw: true, showMerged: true, showRef: true,
 };
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; } };
@@ -293,7 +293,7 @@ function updateStatus() {
   else if (tracker.state === 'paused') set('PAUSED', 'wait');
   else if (fix.acc > settings.maxAcc) set(rec ? `Weak GPS ±${Math.round(fix.acc)} m – not recording` : `Weak GPS ±${Math.round(fix.acc)} m`, 'bad');
   else if (rec && tracker.autoPaused) set('Stopped – auto-paused', 'wait');
-  else if (rec) set('● RECORDING', 'rec');
+  else if (rec) set(`● RECORDING · ${vehicleOf(state.current?.vehicle).short}`, 'rec');
   else set('GPS ready', 'ok');
 }
 
@@ -333,9 +333,36 @@ function startGps() {
   updateStatus();
 }
 
+/**
+ * Ask what a ride is (or was) on. The one used last is the green button.
+ * Resolves with the entry from VEHICLES, or null if cancelled.
+ */
+async function chooseVehicle(title, current) {
+  const res = await ask({
+    title,
+    body: 'This sets how wide a strip each pass counts for, and tunes the GPS to your speed.',
+    buttons: [
+      ...VEHICLES.map((v) => ({ label: v.name, value: v.key, cls: v.key === current ? 'go' : 'ghost' })),
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  return VEHICLES.find((v) => v.key === res.button) ?? null;
+}
+
+let starting = false;
 async function startRide() {
   if (!tracker.geo) { toast('This browser cannot use GPS.'); return; }
-  const ride = { id: Date.now(), name: '', by: settings.userName, startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0 };
+  if (starting || state.current) return;
+  starting = true;
+  const vehicle = await chooseVehicle('What are you on?', settings.vehicle);
+  starting = false;
+  if (!vehicle) return;
+  settings.vehicle = vehicle.key;
+  saveSettings();
+  const ride = {
+    id: Date.now(), name: '', by: settings.userName, vehicle: vehicle.key, vehicleWidth: vehicle.width,
+    startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0,
+  };
   await db.put('rides', ride);
   state.rides.push(ride);
   state.tracks.set(ride.id, []);
@@ -392,7 +419,7 @@ async function finishRide() {
     })
     : await ask({
       title: 'Save this ride',
-      body: `${fmtDist(tracker.dist)} · ${tracker.count} points. Give it a name, such as the trail or loop you rode.`,
+      body: `${fmtDist(tracker.dist)} · ${tracker.count} points · ${vehicleOf(ride.vehicle).name}. Give it a name, such as the trail or loop you covered.`,
       input: { value: `Ride ${n}`, placeholder: 'e.g. Ride 1 - North Loop' },
       buttons: [
         { label: 'SAVE RIDE', value: 'save', cls: 'go' },
@@ -503,8 +530,8 @@ function renderRides() {
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
       <div><div class="name">${esc(r.name)}</div>
-        <div class="meta"><b>${esc(byName(r))}</b> · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
-      <div class="acts"><button data-act="rename">Rename</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
+        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(vehicleOf(r.vehicle).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${r.count} points</div></div>
+      <div class="acts four"><button data-act="rename">Rename</button><button data-act="vehicle">Vehicle</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
   }));
   $('ride-empty').hidden = rides.length > 0;
@@ -533,6 +560,11 @@ $('ride-list').addEventListener('click', async (e) => {
     const res = await ask({ title: 'Rename ride', input: { value: ride.name }, buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
     if (res.button !== 'save' || !res.text) return;
     ride.name = res.text;
+  } else if (act === 'vehicle') {
+    const vehicle = await chooseVehicle(`What was "${ride.name}" on?`, vehicleOf(ride.vehicle).key);
+    if (!vehicle) return;
+    ride.vehicle = vehicle.key;
+    ride.vehicleWidth = vehicle.width;
   } else if (act === 'show') {
     state.focusRide = ride.id;
     showView('net');
@@ -578,12 +610,21 @@ $('pin-list').addEventListener('click', async (e) => {
 function computeNetwork() {
   const tracks = state.rides
     .filter((r) => r.include && state.tracks.get(r.id)?.length)
-    .map((r) => ({ id: r.id, name: rideName(r), by: byName(r), dist: r.dist, startedAt: r.startedAt, segments: state.tracks.get(r.id) }));
+    .map((r) => ({
+      id: r.id, name: rideName(r), by: byName(r), dist: r.dist, startedAt: r.startedAt, segments: state.tracks.get(r.id),
+      vehicle: vehicleOf(r.vehicle), vehicleWidth: r.vehicleWidth ?? vehicleOf(r.vehicle).width,
+    }));
   const net = buildNetwork(tracks, settings);
   nameSegments(net.segments, state.refIndex);
   for (const s of net.segments) {
     s.contributors = [...new Set(s.sources.map((i) => tracks[i].by))];
-    s.width = estimateWidth(s.spread, settings.vehicleWidth);
+    // The trail is at least as wide as the widest thing that travelled it. A
+    // ride that only touched the segment (crossing at a junction) does not count.
+    let through = s.sources.filter((_, k) => s.shares[k] >= 0.5);
+    if (!through.length) through = s.sources;
+    const widest = through.map((i) => tracks[i]).reduce((a, b) => (b.vehicleWidth > a.vehicleWidth ? b : a));
+    s.vehicles = [...new Set(through.map((i) => tracks[i].vehicle.name))];
+    s.width = { ...estimateWidth(s.spread, widest.vehicleWidth), via: widest.vehicle.name };
     const what = s.ref ?? (s.rides.length === 1 ? s.rides[0] : (state.refIndex ? 'New trail' : 'Trail'));
     s.name = `${what} · ${s.id}`;
   }
@@ -694,8 +735,10 @@ function renderSettings() {
   $('acc-val').textContent = `${settings.maxAcc} m`;
   $('mind').value = settings.minDist;
   $('mind-val').textContent = `${settings.minDist} m`;
-  $('veh').value = settings.vehicleWidth;
-  $('veh-val').textContent = `${settings.vehicleWidth.toFixed(2)} m (${(settings.vehicleWidth / 0.0254).toFixed(0)} in)`;
+  $('veh-list').innerHTML = VEHICLES.map((v) => `
+    <li><span class="dot" style="background:${v.key === settings.vehicle ? 'var(--go)' : '#555'}"></span>
+      <span>${esc(v.name)} <span class="sub">${esc(v.basis)}</span></span>
+      <span class="pct">${v.width.toFixed(2)} m</span></li>`).join('');
   $('autopause').checked = settings.autoPause;
   $('awake').checked = settings.keepAwake;
   $('show-raw').checked = settings.showRaw;
@@ -838,7 +881,6 @@ bindSetting('thr', 'threshold', { after: remergeSoon });
 bindSetting('smo', 'smoothing', { after: remergeSoon });
 bindSetting('acc', 'maxAcc');
 bindSetting('mind', 'minDist');
-bindSetting('veh', 'vehicleWidth', { after: () => { state.network = null; } });
 bindSetting('autopause', 'autoPause', { event: 'change' });
 bindSetting('awake', 'keepAwake', { event: 'change', after: () => setWake(!!state.current && settings.keepAwake) });
 bindSetting('show-raw', 'showRaw', { event: 'change', after: () => renderNetwork(false) });
@@ -1033,7 +1075,9 @@ async function boot() {
     geo = (await import('./demo.js')).createDemoGeo(state.ref);
     $('demo-flag').hidden = false;
   }
-  tracker = new Tracker(() => settings, { fix: onFix, point: onPoint, status: updateRideUi }, geo);
+  // The GPS filters are tuned to what the ride is on: a walker is slower than a machine.
+  const trackerSettings = () => ({ ...settings, kind: vehicleOf(state.current?.vehicle ?? settings.vehicle).kind });
+  tracker = new Tracker(trackerSettings, { fix: onFix, point: onPoint, status: updateRideUi }, geo);
 
   refreshRideMap();
   renderSettings();

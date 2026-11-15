@@ -7,15 +7,23 @@
 
 import { haversine } from './geo.js';
 
-const MAX_SPEED = 30;        // m/s (108 km/h): nothing on a trail goes faster
-const STILL_SPEED = 0.5;     // m/s: below this the rider counts as stopped
+// How fast each way of travelling can go, in m/s:
+//   max    nothing on a trail goes faster than this
+//   burst  how much faster than three times the recent pace one fix may be
+//   still  below this the rider counts as stopped
+//   go     at or above this a stopped rider counts as moving again
+const PACE = {
+  foot: { max: 6, burst: 3.5, still: 0.3, go: 0.6 },
+  bike: { max: 18, burst: 4.5, still: 0.5, go: 1 },
+  motor: { max: 30, burst: 6, still: 0.5, go: 1 },
+};
 const STILL_AFTER = 4000;    // ms of being stopped before auto-pause
 const GAP_TIME = 20;         // s without a usable fix ...
 const GAP_DIST = 30;         // ... and this far away: start a new line, don't draw across the gap
 
 export class Tracker {
   /**
-   * @param cfg  () => ({ maxAcc, minDist, autoPause })
+   * @param cfg  () => ({ maxAcc, minDist, autoPause, kind: 'foot' | 'bike' | 'motor' })
    * @param on   { fix(fix, verdict), point(point), status() }
    * @param geo  geolocation provider (navigator.geolocation, or a simulator)
    */
@@ -113,6 +121,7 @@ export class Tracker {
       spd: notNegative(c.speed), hdg: notNegative(c.heading), t, v: 0,
     };
     const cfg = this.cfg();
+    const pace = PACE[cfg.kind] ?? PACE.motor;
     this.error = null;
     this.lastFix = fix;
 
@@ -127,7 +136,7 @@ export class Tracker {
         const d = haversine(this.good.lat, this.good.lon, fix.lat, fix.lon);
         const implied = d / dt;
         // Faster than anything rideable, or a sudden leap compared with the recent pace.
-        const limit = Math.min(MAX_SPEED, 3 * this.pace + 6);
+        const limit = Math.min(pace.max, 3 * this.pace + pace.burst);
         if (implied > limit && this.jumps < 4) {
           verdict = 'jump';
           this.jumps++;
@@ -148,18 +157,18 @@ export class Tracker {
 
     if (verdict === 'ok') {
       this.good = fix;
-      this._trackStillness(fix);
+      this._trackStillness(fix, pace);
     }
     this.on.fix(fix, verdict);
-    if (verdict === 'ok' && this.state === 'recording') this._record(fix, cfg);
+    if (verdict === 'ok' && this.state === 'recording') this._record(fix, cfg, pace);
   }
 
   /** Is the rider stopped? Uses the phone's speed if it reports one, else recent movement. */
-  _trackStillness(fix) {
+  _trackStillness(fix, pace) {
     this.recent = (this.recent ?? []).filter((f) => fix.t - f.t <= 5000);
     this.recent.push(fix);
     let still;
-    if (fix.spd != null) still = fix.spd < STILL_SPEED;
+    if (fix.spd != null) still = fix.spd < pace.still;
     else {
       const first = this.recent[0];
       still = fix.t - first.t >= 3000
@@ -170,7 +179,7 @@ export class Tracker {
     this.isStill = still;
   }
 
-  _record(fix, cfg) {
+  _record(fix, cfg, pace) {
     if (cfg.autoPause) {
       if (!this.autoPaused) {
         if (this.stillSince != null && fix.t - this.stillSince >= STILL_AFTER) {
@@ -180,7 +189,7 @@ export class Tracker {
         }
       } else {
         const away = haversine(this.anchor.lat, this.anchor.lon, fix.lat, fix.lon);
-        const moving = !this.isStill && fix.v >= 1 && away > 3;
+        const moving = !this.isStill && fix.v >= pace.go && away > 3;
         if (moving || away > Math.max(8, fix.acc * 1.5)) {
           this.autoPaused = false;
           this.on.status();

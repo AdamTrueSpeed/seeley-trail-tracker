@@ -26,7 +26,8 @@ function segmentBalloon(s) {
     ['Times ridden', s.passes],
     s.width ? ['Estimated width', `${widthLabel(s.width)}. ${esc(widthNote(s.width))}`] : null,
     s.width && s.width.passes > 1 ? ['Outermost passes + vehicle', `${num(s.width.swept, 1)} m (no allowance for GPS error)`] : null,
-    s.width ? ['Vehicle width assumed', `${num(s.width.vehicle, 2)} m, measured from its centre line`] : null,
+    s.width ? ['Widest through', `${esc(s.width.via ?? 'vehicle')}, ${num(s.width.vehicle, 2)} m, measured from its centre line`] : null,
+    s.vehicles?.length ? ['Travelled by', s.vehicles.map(esc).join(', ')] : null,
     alts.length ? ['GPS elevation', `${num(Math.min(...alts), 0)} to ${num(Math.max(...alts), 0)} m`] : null,
     s.ref ? ['On existing map as', s.ref] : null,
     s.contributors?.length ? ['Surveyed by', s.contributors.map(esc).join(', ')] : null,
@@ -41,7 +42,7 @@ function segmentBalloon(s) {
  * @param o.name      document name
  * @param o.segments  merged network from buildNetwork (optionally with .name / .ref / .contributors)
  * @param o.waypoints [{ name, by, lat, lon, alt, t, rideName }]
- * @param o.rides     [{ name, by, startedAt, segments: [[{lat, lon, alt}]] }] raw tracks (hidden folder)
+ * @param o.rides     [{ name, by, vehicle: { name }, startedAt, segments: [[{lat, lon, alt}]] }] raw tracks (hidden folder)
  * @param o.contributors [{ name, rides, dist, pins }] who recorded what
  * @param o.color     key of TRAIL_COLORS
  * @param o.settings  { threshold, smoothing } recorded in the description
@@ -60,7 +61,7 @@ export function buildKml(o) {
     `GPS-surveyed trail network: ${o.segments.length} segments, ${num(total, 0)} m, from ${o.rides.length} ride(s). `
     + (who.length ? `Contributors: ${who.join('; ')}. ` : '')
     + `Overlapping passes merged within ${o.settings.threshold} m; smoothing ${o.settings.smoothing}. `
-    + (o.settings.vehicleWidth ? `Trail widths are rough estimates assuming a vehicle ${num(o.settings.vehicleWidth, 2)} m wide with the phone on its centre line. ` : '')
+    + 'Trail widths are rough estimates: the width of the widest thing known to have travelled each segment, with the phone on its centre line, plus any spread between passes that GPS error does not explain. '
     + `Exported ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC by Seeley Trail Tracker.`)}</description>`);
   out.push(`<Style id="trail"><LineStyle><color>${color}</color><width>4</width></LineStyle></Style>`);
   out.push('<Style id="raw"><LineStyle><color>99ffffff</color><width>1.5</width></LineStyle></Style>');
@@ -84,6 +85,7 @@ export function buildKml(o) {
           + `<Data name="width_passes"><value>${s.width.passes}</value></Data>`
           + `<Data name="gps_accuracy_m"><value>${s.width.acc == null ? '' : num(s.width.acc, 1)}</value></Data>`
           + `<Data name="vehicle_width_m"><value>${num(s.width.vehicle, 2)}</value></Data>`
+          + `<Data name="vehicles"><value>${esc((s.vehicles ?? []).join('; '))}</value></Data>`
         : '')
       + `<Data name="existing_trail"><value>${esc(s.ref ?? '')}</value></Data>`
       + `<Data name="contributors"><value>${esc((s.contributors ?? []).join('; '))}</value></Data>`
@@ -121,7 +123,7 @@ export function buildKml(o) {
         `<LineString><tessellate>1</tessellate><altitudeMode>clampToGround</altitudeMode><coordinates>${s.map(coord).join(' ')}</coordinates></LineString>`);
       if (!lines.length) continue;
       out.push(`<Placemark><name>${esc(r.name)}</name><visibility>0</visibility>`
-        + `<description>${esc(`Raw GPS track recorded ${new Date(r.startedAt).toLocaleString()}${r.by ? ` by ${r.by}` : ''}`)}</description>`
+        + `<description>${esc(`Raw GPS track recorded ${new Date(r.startedAt).toLocaleString()}${r.by ? ` by ${r.by}` : ''}${r.vehicle ? ` (${r.vehicle.name})` : ''}`)}</description>`
         + `<styleUrl>#raw</styleUrl><MultiGeometry>${lines.join('')}</MultiGeometry></Placemark>`);
     }
     out.push('</Folder>');

@@ -173,6 +173,7 @@ h1 { font-size: 20px; margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 2p
   background: #000; border: 2px solid var(--line); color: #fff; font-weight: 800; font-size: 15px;
 }
 .list .acts button.del { color: #ff8a65; border-color: #7a2a14; flex: 0 0 34%; }
+.list .acts.four { display: grid; grid-template-columns: 1fr 1fr; }
 .pinmark { width: 18px; height: 18px; background: #ffee00; transform: rotate(45deg); margin: 0 8px; }
 
 .switch { position: relative; width: 62px; height: 36px; flex: none; }
