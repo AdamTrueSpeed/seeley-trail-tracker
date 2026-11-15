@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>Updating Seeley Trail Tracker</title>
+  <style>
+    body { margin: 0; padding: 32px 24px; background: #000; color: #fff; font: 20px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 26px; margin: 0 0 12px; }
+    p { color: #a9b8c6; }
+    a { display: inline-block; margin-top: 16px; padding: 16px 22px; border-radius: 14px; background: #00e676; color: #000; font-weight: 900; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1 id="title">Updating…</h1>
+  <p id="msg">Getting the newest version. Your rides and pins are not touched.</p>
+  <a id="open" href="./" hidden>OPEN THE APP</a>
+
+  <!-- Opening this page forces a phone onto the newest published version:
+       every file is fetched fresh (skipping all saved copies), then the app opens.
+       Nothing recorded on the phone is changed. -->
+  <script>
+    (async () => {
+      const say = (title, msg) => {
+        document.getElementById('title').textContent = title;
+        document.getElementById('msg').textContent = msg;
+      };
+      try {
+        const info = await (await fetch('version.json', { cache: 'no-store' })).json();
+        const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
+        if (reg) await reg.update().catch(() => {});
+        await Promise.all(info.files.map((f) => fetch(f, { cache: 'reload' }).then((r) => {
+          if (!r.ok) throw new Error(f);
+        })));
+        say('Up to date', `Version ${info.version} is on this phone now. Opening the app…`);
+        document.getElementById('open').hidden = false;
+        setTimeout(() => location.replace('./'), 1500);
+      } catch (err) {
+        say('Could not update', 'The update did not download. Check that you have a signal, then open this link again.');
+      }
+    })();
+  </script>
+</body>
+</html>
