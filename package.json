@@ -6,5 +6,8 @@
     "start": "node tools/serve.mjs",
     "test": "node tools/test-merge.mjs && node tools/test-units.mjs && node tools/check-release.mjs",
     "test:relay": "node tools/test-relay.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.162.0"
   }
 }

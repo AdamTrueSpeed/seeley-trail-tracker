@@ -30,6 +30,8 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET' || url.origin !== self.location.origin) return;
   // The update check must see what is really published, never a saved copy.
   if (url.pathname.endsWith('/version.json')) return;
+  // The cloud database is never answered from a saved copy.
+  if (url.pathname.includes('/api/')) return;
   url.search = '';
   event.respondWith((async () => {
     const cache = await caches.open(CACHE);

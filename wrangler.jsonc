@@ -1,0 +1,11 @@
+// Cloudflare: the website (every file here except what .assetsignore lists)
+// plus worker/index.js, which answers /api/* and keeps the rides in a D1 database.
+{
+  "name": "seeley-trail-tracker",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-05-01",
+  "assets": { "directory": "./", "binding": "ASSETS" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "seeley-trails", "database_id": "ff2e84a6-4dc2-42af-8e1f-d3bc6028d62c" }
+  ]
+}

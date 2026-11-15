@@ -12,7 +12,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { newTransferCode, cleanTransferCode, receivePackage } from '../js/transfer.js';
 
-const APP_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // the same address as SHARE_URL in js/app.js
+const APP_URL = 'https://seeley-trail-tracker.seeley-trails.workers.dev/'; // the same address as SHARE_URL in js/app.js
 
 const [first, folder, hours] = process.argv.slice(2);
 if (first === '--new-code') {

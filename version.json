@@ -1,5 +1,5 @@
 {
-  "version": "1.13",
+  "version": "1.14",
   "files": [
     "./",
     "index.html",
@@ -16,6 +16,7 @@
     "js/merge.js",
     "js/reference.js",
     "js/share.js",
+    "js/sync.js",
     "js/tracker.js",
     "js/transfer.js",
     "js/width.js",

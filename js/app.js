@@ -12,12 +12,13 @@ import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
 import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf, movingTimeOf, STOP_GAP } from './activity.js';
 import { natureHunt, placesHunt, photoItem, placesReached, hintFor, foundCount, isComplete, encodeHunt, decodeHunt, REACH, NATURE_ITEMS } from './hunt.js';
 import { sendPackage, cleanTransferCode } from './transfer.js';
+import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.13';
+const VERSION = '1.14';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
+const SHARE_URL = 'https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -643,6 +644,7 @@ async function addMethod() {
   const method = { key: `c${Date.now()}`, name, short: name, width, kind: moves.button, basis: 'added on this phone' };
   settings.customVehicles = [...(settings.customVehicles ?? []), method];
   saveSettings();
+  prefsChanged();
   renderSettings();
   toast(`Added ${name}`);
   return method;
@@ -791,6 +793,7 @@ async function finishRide() {
   refreshRideMap();
   notice('');
   updateRideUi();
+  syncSoon();
   if (ride.status === 'done') await showReport(ride);
 }
 
@@ -1098,6 +1101,7 @@ $('ride-list').addEventListener('click', async (e) => {
   if (act === 'delete') await db.deleteRide(ride.id); else await db.put('rides', ride);
   renderRides();
   refreshRideMap();
+  syncSoon();
 });
 
 $('pin-list').addEventListener('click', async (e) => {
@@ -1128,6 +1132,7 @@ $('pin-list').addEventListener('click', async (e) => {
   }
   renderRides();
   rideMap.setPins(state.pins);
+  syncSoon();
 });
 
 // ---- merge & export screen --------------------------------------------------
@@ -1192,6 +1197,7 @@ async function askSystemName() {
   if (res.button !== 'save' || !res.text) return false;
   settings.systemName = res.text.slice(0, 60);
   saveSettings();
+  prefsChanged();
   state.lastKml = null;
   if (state.view === 'net') renderNetwork(false);
   return true;
@@ -1248,6 +1254,7 @@ async function nameBranch(seg) {
   state.branchIndex = branchIndexOf(state.branches);
   state.network = null;
   renderNetwork(false);
+  syncSoon();
 }
 
 $('seg-list').addEventListener('click', (e) => {
@@ -1427,6 +1434,7 @@ function renderSettings() {
   $('weight').value = settings.weightKg;
   $('weight-val').textContent = `${settings.weightKg} kg (${Math.round(settings.weightKg * 2.2046)} lb)`;
   renderSharing();
+  renderCloud();
   const checked = update.checkedAt ? ` (checked ${new Date(update.checkedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })})` : '';
   $('version').textContent = `Version ${VERSION}${DEMO ? ' · demo mode' : ''} · ${{
     unknown: 'not checked yet',
@@ -1703,6 +1711,7 @@ $('veh-list').addEventListener('click', async (e) => {
   settings.customVehicles = settings.customVehicles.filter((v) => v !== method);
   if (settings.vehicle === method.key) settings.vehicle = 'grizzly';
   saveSettings();
+  prefsChanged();
   renderSettings();
 });
 
@@ -2124,6 +2133,159 @@ async function sendToMap(code = localStorage.getItem('tt-map-code')) {
 }
 $('btn-send-map').addEventListener('click', () => sendToMap());
 
+// ---- cloud sync -----------------------------------------------------------------------
+//
+// See sync.js. Off until the user turns it on. With it on, this device's rides,
+// pins, photos and branch names are kept in step with the family's database
+// whenever there is a signal, so they can be seen and changed on any of the
+// family's phones and computers.
+
+const cloud = { code: localStorage.getItem('tt-sync-code'), busy: false, at: 0, error: null, again: false };
+const sharedPrefs = {
+  get: () => ({ systemName: settings.systemName ?? null, customVehicles: settings.customVehicles ?? [] }),
+  set: (data) => {
+    if (data.systemName) settings.systemName = String(data.systemName).slice(0, 60);
+    if (Array.isArray(data.customVehicles)) settings.customVehicles = data.customVehicles;
+    saveSettings();
+  },
+};
+/** The shared settings changed on this device: pass them on at the next sync. */
+const prefsChanged = () => { if (cloud.code) db.touch('kv', 'prefs').then(syncSoon, () => {}); };
+
+function renderCloud() {
+  const on = !!cloud.code;
+  const when = cloud.at ? new Date(cloud.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+  $('sync-info').textContent = !on
+    ? 'Off. Your rides are kept on this device only. Turn it on to keep a copy in your Cloudflare database and to see and change your rides on your other phones and computers.'
+    : cloud.busy ? 'On. Syncing now…'
+      : cloud.error ? `On, but the last sync did not get through (${cloud.error}). It will try again by itself.`
+        : when ? `On. Everything was in step at ${when}.` : 'On. Waiting for a signal to sync.';
+  for (const id of ['btn-sync-on', 'btn-sync-join']) $(id).hidden = on;
+  for (const id of ['btn-sync-add', 'btn-sync-now', 'btn-sync-off']) $(id).hidden = !on;
+  $('btn-sync-move').hidden = !on || !OLD_HOME;
+}
+
+// The app used to live on GitHub. A phone still opening it from there keeps its
+// rides in that address's storage, so the way across is: sync them to the
+// cloud here, then open the new address with the same family code.
+const OLD_HOME = location.hostname.endsWith('github.io');
+$('btn-sync-move').addEventListener('click', async () => {
+  await runSync(true);
+  if (cloud.error) return; // not everything is in the cloud yet
+  location.href = `${SHARE_URL}#sync=${cloud.code}`;
+});
+
+/** Exchange changes with the cloud now, unless something is in the way (a ride being recorded, a question on screen). */
+async function runSync(manual = false) {
+  if (!cloud.code) return;
+  if (cloud.busy) { cloud.again = true; return; }
+  if (!manual && (state.current || $('dlg').open || !navigator.onLine)) return;
+  if (state.current) { toast('Sync waits until this ride is finished.'); return; }
+  cloud.busy = true;
+  renderCloud();
+  try {
+    const res = await syncNow(cloud.code, sharedPrefs);
+    cloud.at = Date.now();
+    cloud.error = null;
+    if (res.changed && !state.current) {
+      await loadAll();
+      state.network = null;
+      refreshRideMap();
+      if (state.view === 'rides') renderRides();
+      if (state.view === 'net') renderNetwork(false);
+      if (state.view === 'settings') renderSettings();
+    }
+    if (manual) toast(res.got || res.sent ? `Synced: ${res.sent} sent, ${res.got} received.` : 'Everything is already in step.');
+  } catch (err) {
+    cloud.error = navigator.onLine ? (err.message || 'no answer') : 'no signal';
+    if (manual) toast('Could not reach the cloud. It will try again when there is a signal.', 5000);
+  } finally {
+    cloud.busy = false;
+    renderCloud();
+    if (cloud.again) { cloud.again = false; syncSoon(); }
+  }
+}
+let syncTimer;
+function syncSoon() {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => runSync(), 3000);
+}
+window.addEventListener('online', syncSoon);
+setInterval(() => { if (document.visibilityState === 'visible') runSync(); }, 60000);
+
+/** Start using a family code on this device: everything here is offered to the cloud, everything there comes down. */
+async function useSyncCode(code) {
+  await forgetSync();
+  await db.touchAll();
+  cloud.code = code;
+  cloud.at = 0;
+  localStorage.setItem('tt-sync-code', code);
+  if (settings.systemName || settings.customVehicles?.length) await db.touch('kv', 'prefs');
+  renderCloud();
+  await runSync(true);
+}
+
+$('btn-sync-on').addEventListener('click', async () => {
+  const res = await ask({
+    title: 'Turn on cloud sync?',
+    body: 'Your rides, pins, photos and branch names are copied to your database on Cloudflare whenever this device has a signal. Any phone or computer you give your family sync code to can see and change them. Everything still works with no signal.',
+    buttons: [{ label: 'TURN ON', value: 'save', cls: 'go' }, { label: 'I have a code already', value: 'join' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button === 'join') await joinSync();
+  // Turned off and on again on the same device: the same code, so the same rides.
+  else if (res.button === 'save') await useSyncCode(cleanSyncCode(localStorage.getItem('tt-sync-code-last')) ?? newSyncCode());
+});
+
+async function joinSync(text = null) {
+  if (text == null) {
+    const res = await ask({
+      title: 'Join your family\'s sync',
+      body: 'Paste the link or code from a phone or computer that already has cloud sync on (Settings > Cloud sync > Add another phone or computer).',
+      input: { placeholder: 'Paste it here' },
+      buttons: [{ label: 'JOIN', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (res.button !== 'save') return;
+    text = res.text;
+  }
+  const code = cleanSyncCode(text);
+  if (!code) { toast('That is not a sync link or code.', 5000); return; }
+  if (code === cloud.code) { toast('This device is already using that code.'); return; }
+  const mine = doneRides().length;
+  const res = await ask({
+    title: 'Join this family sync?',
+    body: `This device will show the family's rides, pins and photos.${mine ? ` The ${mine} ride${mine === 1 ? '' : 's'} already on this device ${mine === 1 ? 'is' : 'are'} added to the family's.` : ''}`,
+    buttons: [{ label: 'JOIN', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button === 'save') await useSyncCode(code);
+}
+$('btn-sync-join').addEventListener('click', () => joinSync());
+$('btn-sync-now').addEventListener('click', () => runSync(true));
+$('btn-sync-add').addEventListener('click', async () => {
+  const res = await ask({
+    title: 'Add another phone or computer',
+    body: 'Send yourself this link and open it on the other device. Anyone who has it can see and change your rides, so send it only to devices and people you trust.',
+    buttons: [{ label: 'SEND THE LINK', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button !== 'save') return;
+  await shareMessage({
+    title: 'Seeley Trail Tracker sync',
+    text: 'Open this on the other phone or computer to share the same rides. (If it opens outside the app, copy the link and use Settings > Cloud sync > Join with a code.)',
+    url: `${SHARE_URL}#sync=${cloud.code}`,
+  }, 'Copied. Paste it into a message to yourself.');
+});
+$('btn-sync-off').addEventListener('click', async () => {
+  const res = await ask({
+    title: 'Turn off cloud sync on this device?',
+    body: 'The rides stay on this device and in the cloud, but changes stop passing between them until you turn it on again.',
+    buttons: [{ label: 'Keep it on', value: 'cancel', cls: 'go' }, { label: 'Turn off', value: 'yes', cls: 'stop' }],
+  });
+  if (res.button !== 'yes') return;
+  localStorage.setItem('tt-sync-code-last', cloud.code);
+  cloud.code = null;
+  localStorage.removeItem('tt-sync-code');
+  renderCloud();
+});
+
 // ---- staying up to date ---------------------------------------------------------
 //
 // version.json on the website says which version is published and which files
@@ -2161,7 +2323,7 @@ async function checkForUpdate(manual = false) {
     setUpdate('stuck');
     return;
   }
-  if (state.current || $('dlg').open || sendingMap) {
+  if (state.current || $('dlg').open || sendingMap || cloud.busy) {
     setUpdate('waiting');
     return;
   }
@@ -2525,6 +2687,7 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   share.resume();
+  syncSoon();
   if (state.gpsWanted) tracker.watch();
   if (state.current) {
     setWake(true);
@@ -2586,15 +2749,21 @@ async function boot() {
   await applySharing();
   window.addEventListener('hashchange', checkInvite); // the link was tapped while the app was already open
   await checkInvite();
+  runSync(); // does nothing unless cloud sync is on
+  if (OLD_HOME && !state.current) {
+    notice(cloud.code ? 'This app has a new address. Go to Settings > Cloud sync and tap "Move to the app\'s new address".'
+      : 'This app has a new address. To take your rides with you: Settings > Cloud sync > Turn on cloud sync, then "Move to the app\'s new address".');
+  }
 }
 
 /** Opened from a friend's "add me" link (…#friend=CODE) or a hunt link (…#hunt=CODE)? Offer to add them, or open the hunt. */
 async function checkInvite() {
   const hash = location.hash;
-  const invite = /[#&]friend=([^&]+)/.exec(hash), hunt = /[#&]hunt=/.test(hash), map = /[#&]map=/.test(hash);
-  if ((!invite && !hunt && !map) || $('dlg').open) return;
+  const invite = /[#&]friend=([^&]+)/.exec(hash), hunt = /[#&]hunt=/.test(hash), map = /[#&]map=/.test(hash), sync = /[#&]sync=/.test(hash);
+  if ((!invite && !hunt && !map && !sync) || $('dlg').open) return;
   history.replaceState(null, '', location.pathname + location.search);
-  if (map) {
+  if (sync) await joinSync(hash);
+  else if (map) {
     const code = cleanTransferCode(hash);
     if (code) await sendToMap(code);
     else toast('That send link is not complete. Ask for a new one.', 5000);
