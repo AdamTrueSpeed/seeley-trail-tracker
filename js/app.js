@@ -15,7 +15,7 @@ import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.14';
+const VERSION = '1.15';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -110,7 +110,7 @@ const stamp = () => {
   const d = new Date(), p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
 };
-const rideName = (r) => r.name || 'Ride in progress';
+const rideName = (r) => r.name || 'In progress';
 const doneRides = () => state.rides.filter((r) => r.status === 'done');
 const byName = (x) => x.by || 'Unknown';
 
@@ -132,6 +132,9 @@ function methodOf(ride) {
   }
   return vehicleOf(ride?.vehicle);
 }
+/** What one outing by this method is called: "walk", "run", "jog", or "ride" for anything you sit on or in. */
+const nounOf = (ride) => methodOf(ride).noun ?? 'ride';
+const capital = (s) => s[0].toUpperCase() + s.slice(1);
 const setMethod = (ride, m) => Object.assign(ride, { vehicle: m.key, vehicleName: m.name, vehicleWidth: m.width, vehicleKind: m.kind });
 
 /** "1.5", "150 cm", "60 in", "5 ft" -> metres (null if it makes no sense). A bare number over 4 is taken as inches. */
@@ -181,7 +184,7 @@ function totalsByMethod(rides) {
   const by = new Map();
   for (const r of rides) {
     const name = methodOf(r).name;
-    const e = by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, time: 0, moving: 0, kcal: 0, steps: 0 }).get(name);
+    const e = by.get(name) ?? by.set(name, { name, noun: nounOf(r), rides: 0, dist: 0, time: 0, moving: 0, kcal: 0, steps: 0 }).get(name);
     e.rides++;
     e.dist += r.dist ?? 0;
     e.time += timeOf(r);
@@ -536,7 +539,7 @@ function updateStatus() {
   const el = $('status'), fix = tracker.lastFix, rec = tracker.state !== 'idle';
   const set = (text, cls) => { el.textContent = text; el.className = `status ${cls}`; };
   if (tracker.error === 'denied') set('Location is blocked for this site', 'bad');
-  else if (!state.gpsWanted) set('Press START RIDE to turn on GPS', 'wait');
+  else if (!state.gpsWanted) set('Press START to turn on GPS', 'wait');
   else if (!fix) set(tracker.error ? 'No GPS signal yet' : 'Finding GPS…', 'wait');
   else if (Date.now() - state.fixAt > 10000) set('GPS signal lost', 'bad');
   else if (tracker.state === 'paused') set('PAUSED', 'wait');
@@ -655,7 +658,7 @@ async function startRide() {
   if (!tracker.geo) { toast('This browser cannot use GPS.'); return; }
   if (starting || state.current) return;
   starting = true;
-  const vehicle = await chooseVehicle('What are you on?', settings.vehicle);
+  const vehicle = await chooseVehicle('How are you travelling?', settings.vehicle);
   starting = false;
   if (!vehicle) return;
   settings.vehicle = vehicle.key;
@@ -707,7 +710,7 @@ function onPoint(p, newSeg) {
     }
   }
   rideMap.addLive(p.lat, p.lon, newSeg);
-  if (tracker.count === 1) { // the clock starts here, not at the tap on START RIDE
+  if (tracker.count === 1) { // the clock starts here, not at the tap on START
     ride.startedAt = p.t;
     ride.clockAt = clockNow();
     ride.pausedMs = 0;
@@ -716,7 +719,7 @@ function onPoint(p, newSeg) {
   ride.dist = tracker.dist;
   ride.count = tracker.count;
   db.addPoint({ ride: ride.id, ...p }).catch(() => {
-    if (!storageWarned) notice('Could not save to the phone\'s storage. Free up some space, then finish this ride.');
+    if (!storageWarned) notice('Could not save to the phone\'s storage. Free up some space, then press FINISH.');
     storageWarned = true;
   });
   if (ride.count % 20 === 0) db.put('rides', ride);
@@ -742,31 +745,32 @@ async function finishRide() {
   const ride = state.current;
   if (!ride) return;
   const tappedAt = clockNow(), countAtTap = tracker.count;
-  const n = doneRides().length + 1;
+  const noun = nounOf(ride);
+  const n = doneRides().filter((r) => nounOf(r) === noun).length + 1;
   noteSteps(ride);
   const effort = [stepsText(ride), fmtKcal(activity.kcal)].filter(Boolean).join(' · ');
   const res = tracker.count < 2
     ? await ask({
       title: 'Nothing recorded yet',
-      body: 'This ride has no GPS points, so there is nothing to save.',
-      buttons: [{ label: 'KEEP RIDING', value: 'cancel', cls: 'go' }, { label: 'End without saving', value: 'discard', cls: 'stop' }],
+      body: `This ${noun} has no GPS points, so there is nothing to save.`,
+      buttons: [{ label: 'KEEP GOING', value: 'cancel', cls: 'go' }, { label: 'End without saving', value: 'discard', cls: 'stop' }],
     })
     : await ask({
-      title: 'Save this ride',
+      title: `Save this ${noun}`,
       body: `${fmtDist(tracker.dist)} in ${fmtClock(timeOf(ride))} · ${methodOf(ride).name} · ${effort}. Give it a name, such as the trail or loop you covered.`,
-      input: { value: `Ride ${n}`, placeholder: 'e.g. Ride 1 - North Loop' },
+      input: { value: `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
       buttons: [
-        { label: 'SAVE RIDE', value: 'save', cls: 'go' },
-        { label: 'Keep riding', value: 'cancel' },
-        { label: 'Throw this ride away', value: 'discard', cls: 'stop' },
+        { label: `SAVE ${noun.toUpperCase()}`, value: 'save', cls: 'go' },
+        { label: 'Keep going', value: 'cancel' },
+        { label: `Throw this ${noun} away`, value: 'discard', cls: 'stop' },
       ],
     });
   if (res.button === 'cancel') return;
   if (res.button === 'discard' && tracker.count >= 2) {
     const sure = await ask({
-      title: 'Throw this ride away?',
+      title: `Throw this ${noun} away?`,
       body: `${fmtDist(tracker.dist)} of recording will be deleted. This cannot be undone.`,
-      buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'DELETE RIDE', value: 'yes', cls: 'stop' }],
+      buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: `DELETE ${noun.toUpperCase()}`, value: 'yes', cls: 'stop' }],
     });
     if (sure.button !== 'yes') return;
   }
@@ -784,7 +788,7 @@ async function finishRide() {
     // The clock stops at the tap on FINISH, unless more was recorded while the question was on screen.
     ride.finishedAt = tracker.count > countAtTap ? clockNow() : tappedAt;
     endPause(ride, ride.finishedAt);
-    ride.name = res.text || `Ride ${n}`;
+    ride.name = res.text || `${capital(noun)} ${n}`;
     ride.status = 'done';
     await db.put('rides', ride);
     toast(`Saved "${ride.name}"`);
@@ -999,9 +1003,9 @@ async function recoverUnfinished() {
     }
     Object.assign(ride, { dist: m.dist, count: m.count, startedAt: m.startedAt, endedAt: m.endedAt });
     const res = await ask({
-      title: 'Unfinished ride found',
-      body: `The app closed during a ride on ${fmtDate(m.startedAt)} (${fmtDist(m.dist)}). Nothing was lost.`,
-      buttons: [{ label: 'CONTINUE THIS RIDE', value: 'resume', cls: 'go' }, { label: 'Save it as it is', value: 'save' }],
+      title: `Unfinished ${nounOf(ride)} found`,
+      body: `The app closed during a ${nounOf(ride)} on ${fmtDate(m.startedAt)} (${fmtDist(m.dist)}). Nothing was lost.`,
+      buttons: [{ label: `CONTINUE THIS ${nounOf(ride).toUpperCase()}`, value: 'resume', cls: 'go' }, { label: 'Save it as it is', value: 'save' }],
     });
     if (res.button === 'resume' && !state.current) {
       endPause(ride, Date.now(), ride.pausedAt ?? m.endedAt); // the time the app was closed does not count
@@ -1013,7 +1017,7 @@ async function recoverUnfinished() {
       startActivity(ride);
       setWake(true);
     } else {
-      ride.name ||= `Ride ${doneRides().length + 1} (recovered)`;
+      ride.name ||= `${capital(nounOf(ride))} ${doneRides().length + 1} (recovered)`;
       ride.status = 'done';
     }
     await db.put('rides', ride);
@@ -1043,12 +1047,12 @@ function renderRides() {
   if (totals.length > 1) {
     totals.push(totals.reduce((a, t) => ({
       ...a, rides: a.rides + t.rides, dist: a.dist + t.dist, time: a.time + t.time, moving: a.moving + t.moving, kcal: a.kcal + t.kcal, steps: a.steps + t.steps,
-    }), { name: 'All travel', rides: 0, dist: 0, time: 0, moving: 0, kcal: 0, steps: 0, all: true }));
+    }), { name: 'All travel', noun: 'outing', rides: 0, dist: 0, time: 0, moving: 0, kcal: 0, steps: 0, all: true }));
   }
   $('totals').hidden = !rides.length;
   $('totals-list').innerHTML = totals.map((t) => `
     <li class="${t.all ? 'all' : ''}"><span class="dot" style="background:${t.all ? '#fff' : 'var(--live)'}"></span>
-      <span>${esc(t.name)} <span class="sub">${t.rides} ride${t.rides === 1 ? '' : 's'} · moving ${fmtDur(t.moving)} · ${fmtKcal(t.kcal)}${t.steps ? ` · ${t.steps.toLocaleString()} steps` : ''}</span></span>
+      <span>${esc(t.name)} <span class="sub">${t.rides} ${t.noun ?? 'ride'}${t.rides === 1 ? '' : 's'} · moving ${fmtDur(t.moving)} · ${fmtKcal(t.kcal)}${t.steps ? ` · ${t.steps.toLocaleString()} steps` : ''}</span></span>
       <span class="pct two">${fmtDist(t.dist)}<i>${fmtDur(t.time)}</i></span></li>`).join('');
 
   $('pin-list').replaceChildren(...state.pins.map((p) => {
@@ -1076,7 +1080,7 @@ $('ride-list').addEventListener('click', async (e) => {
   if (act === 'include') {
     ride.include = e.target.checked;
   } else if (act === 'rename') {
-    const res = await ask({ title: 'Rename ride', input: { value: ride.name }, buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
+    const res = await ask({ title: `Rename ${nounOf(ride)}`, input: { value: ride.name }, buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
     if (res.button !== 'save' || !res.text) return;
     ride.name = res.text;
   } else if (act === 'vehicle') {
@@ -1091,7 +1095,7 @@ $('ride-list').addEventListener('click', async (e) => {
     const res = await ask({
       title: `Delete "${ride.name}"?`,
       body: `${fmtDist(ride.dist)} recorded ${fmtDate(ride.startedAt)}. This cannot be undone.`,
-      buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'DELETE RIDE', value: 'yes', cls: 'stop' }],
+      buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: `DELETE ${nounOf(ride).toUpperCase()}`, value: 'yes', cls: 'stop' }],
     });
     if (res.button !== 'yes') return;
     state.rides = state.rides.filter((r) => r !== ride);
@@ -1964,7 +1968,7 @@ function renderHunt() {
         <p class="hint">Every pin you have dropped becomes a place to find. The app ticks each one off when you get within ${REACH} m of it.</p>
         <button class="big ghost" data-act="join">JOIN A HUNT A FRIEND SENT</button>
       </div>
-      <p class="hint">Want the walk recorded too? Press <b>START RIDE</b> on the Ride screen first. The hunt carries on either way.</p>`;
+      <p class="hint">Want the walk recorded too? Press <b>START</b> on the Record screen first. The hunt carries on either way.</p>`;
     return;
   }
   const { hunt, status } = game;
@@ -2180,7 +2184,7 @@ async function runSync(manual = false) {
   if (!cloud.code) return;
   if (cloud.busy) { cloud.again = true; return; }
   if (!manual && (state.current || $('dlg').open || !navigator.onLine)) return;
-  if (state.current) { toast('Sync waits until this ride is finished.'); return; }
+  if (state.current) { toast('Sync waits until you press FINISH.'); return; }
   cloud.busy = true;
   renderCloud();
   try {

@@ -17,13 +17,18 @@ export const GRIZZLY_WIDTH = 1.23;
  * to be centred on the phone. `kind` sets how the GPS filters behave (a walker
  * is slower and stops more gently than a machine).
  */
+// `noun` is what one outing is called: only something you sit on or in is a "ride".
 export const VEHICLES = [
-  { key: 'walk', name: 'Walking', short: 'Walking', width: 0.45, kind: 'foot', basis: 'average adult shoulder width' },
+  { key: 'walk', name: 'Walk (Hike)', short: 'Walk', noun: 'walk', width: 0.45, kind: 'foot', basis: 'average adult shoulder width' },
+  { key: 'jog', name: 'Jog', short: 'Jog', noun: 'jog', width: 0.45, kind: 'foot', basis: 'same as walking' },
+  { key: 'run', name: 'Run', short: 'Run', noun: 'run', width: 0.45, kind: 'foot', basis: 'same as walking' },
   { key: 'bike', name: 'Cycling', short: 'Cycling', width: 0.45, kind: 'bike', basis: 'same as walking' },
+  { key: 'horse', name: 'Horseback', short: 'Horseback', width: 0.8, kind: 'bike', basis: 'a horse and rider, about 31 in' },
   { key: 'grizzly', name: 'Yamaha Grizzly', short: 'Grizzly', width: GRIZZLY_WIDTH, kind: 'motor', basis: '48.4 in' },
   // effort 'drive': you sit in it rather than straddle it, which burns less (see activity.js)
   { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', effort: 'drive', basis: '66.1 in' },
   { key: 'renegade', name: 'Can-Am Renegade', short: 'Renegade', width: 1.22, kind: 'motor', basis: '48 in' },
+  { key: 'outlander', name: 'Can-Am Outlander 650', short: 'Outlander', width: 1.17, kind: 'motor', basis: '46 in' },
 ];
 
 /** Rides recorded before the app asked were taken to be on the Grizzly. */

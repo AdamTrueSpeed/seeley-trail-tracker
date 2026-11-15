@@ -29,7 +29,7 @@
     </div>
     <div class="stats">
       <div class="stat"><b id="st-speed">0</b><i>km/h</i></div>
-      <div class="stat"><b id="st-dist">0.00</b><i>km ridden</i></div>
+      <div class="stat"><b id="st-dist">0.00</b><i>km</i></div>
       <div class="stat"><b id="st-acc">--</b><i>GPS &plusmn; m</i></div>
       <div class="stat"><b id="st-time" class="clock">0:00</b><i>time</i></div>
     </div>
@@ -52,7 +52,7 @@
       <div id="notice" class="notice" hidden></div>
     </div>
     <div class="actions" id="actions-idle">
-      <button id="btn-start" class="big go">START RIDE</button>
+      <button id="btn-start" class="big go">START</button>
       <button id="btn-pin-idle" class="big info">DROP PIN</button>
       <button id="btn-photo-idle" class="big info">PHOTO</button>
     </div>
@@ -75,10 +75,10 @@
     </div>
     <div class="btnrow"><button id="btn-send-map" class="mid">Send rides to my map</button></div>
     <p class="hint">Sends every saved ride and pin to the computer that keeps your trail map. It needs a send link from that computer first.</p>
-    <h1>Saved rides</h1>
-    <p class="hint">Switch a ride off to leave it out of the trail network.</p>
+    <h1>Saved walks and rides</h1>
+    <p class="hint">Switch one off to leave it out of the trail network.</p>
     <ul id="ride-list" class="list"></ul>
-    <p id="ride-empty" class="empty">No rides yet. Go to <b>Ride</b> and press START RIDE.</p>
+    <p id="ride-empty" class="empty">Nothing saved yet. Go to <b>Record</b> and press START.</p>
     <h1>Waypoints</h1>
     <ul id="pin-list" class="list"></ul>
     <p id="pin-empty" class="empty">No pins dropped yet.</p>
@@ -217,7 +217,7 @@
     </label>
 
     <h1>Methods of travel</h1>
-    <p class="hint">You pick one each time you press START RIDE. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Saved rides. To change it for a saved ride, use its <b>Method</b> button.</p>
+    <p class="hint">You pick one each time you press START. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Saved rides. To change it for a saved ride, use its <b>Method</b> button.</p>
     <ul id="veh-list" class="coverage card"></ul>
     <div class="btnrow"><button id="btn-add-method" class="mid">Add a method of travel</button></div>
 
@@ -272,8 +272,8 @@
 </main>
 
 <nav class="tabs" id="tabs">
-  <button data-view="ride" class="active">Ride</button>
-  <button data-view="rides">Saved rides</button>
+  <button data-view="ride" class="active">Record</button>
+  <button data-view="rides">Saved</button>
   <button data-view="net">Merge &amp; export</button>
   <button data-view="hunt">Hunt</button>
   <button data-view="settings">Settings</button>
@@ -311,7 +311,7 @@
     <li>Point your phone's camera at the square and tap the link that appears.</li>
     <li><b>Android:</b> tap the blue INSTALL bar at the top (or the &#8942; menu, then Install app).</li>
     <li><b>iPhone:</b> in Safari tap Share, then Add to Home Screen.</li>
-    <li>Open it from your home screen, press START RIDE and allow location.</li>
+    <li>Open it from your home screen, press START and allow location.</li>
   </ol>
 </section>
 
