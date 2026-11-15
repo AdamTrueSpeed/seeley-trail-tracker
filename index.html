@@ -31,16 +31,17 @@
       <div class="stat"><b id="st-speed">0</b><i>km/h</i></div>
       <div class="stat"><b id="st-dist">0.00</b><i>km ridden</i></div>
       <div class="stat"><b id="st-acc">--</b><i>GPS &plusmn; m</i></div>
-      <div class="stat"><b id="st-pts">0</b><i>points</i></div>
+      <div class="stat"><b id="st-time" class="clock">0:00</b><i>time</i></div>
     </div>
     <div id="activity" class="activity" hidden>
-      <span id="act-time"></span><span id="act-steps"></span><span id="act-kcal"></span><span id="act-elev"></span>
+      <span id="act-moving"></span><span id="act-steps"></span><span id="act-kcal"></span><span id="act-elev"></span><span id="act-pts"></span>
     </div>
     <div class="mapwrap">
       <canvas id="map-ride" class="map"></canvas>
       <div id="status" class="status wait">Starting…</div>
       <button id="share-pill" class="sharepill">PRIVATE</button>
       <button id="cond-pill" class="sharepill cond" hidden>TRAIL: NOT SET</button>
+      <button id="hunt-pill" class="sharepill hunt" hidden>HUNT</button>
       <div id="demo-flag" class="status demo" hidden>DEMO – simulated GPS</div>
       <div class="mapbtns">
         <button id="ride-in" aria-label="Zoom in">+</button>
@@ -69,7 +70,7 @@
   <!-- ===== Saved rides ===== -->
   <section class="view page" id="view-rides" hidden>
     <div id="totals" hidden>
-      <h1>Distance travelled</h1>
+      <h1>Distance and time travelled</h1>
       <ul id="totals-list" class="coverage card"></ul>
     </div>
     <h1>Saved rides</h1>
@@ -130,6 +131,16 @@
         <summary>Contributors</summary>
         <ul id="who-list" class="coverage"></ul>
       </details>
+    </div>
+  </section>
+
+  <!-- ===== Scavenger hunt ===== -->
+  <section class="view page" id="view-hunt" hidden>
+    <h1>Scavenger hunt</h1>
+    <div id="hunt-body"></div>
+    <div id="hunt-past" hidden>
+      <h1>Finished hunts</h1>
+      <ul id="hunt-history" class="coverage card"></ul>
     </div>
   </section>
 
@@ -251,6 +262,7 @@
   <button data-view="ride" class="active">Ride</button>
   <button data-view="rides">Saved rides</button>
   <button data-view="net">Merge &amp; export</button>
+  <button data-view="hunt">Hunt</button>
   <button data-view="settings">Settings</button>
 </nav>
 

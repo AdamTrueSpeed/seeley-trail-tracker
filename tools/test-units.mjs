@@ -2,7 +2,8 @@
 // calories, friend codes and the sealing of shared positions.
 // Usage: node tools/test-units.mjs
 
-import { StepDetector, stepsFromDistance, metFor, kcalFor, kcalOfRide, effortOf, elevationOf } from '../js/activity.js';
+import { StepDetector, stepsFromDistance, metFor, kcalFor, kcalOfRide, effortOf, elevationOf, movingTimeOf } from '../js/activity.js';
+import { natureHunt, placesHunt, placesReached, hintFor, foundCount, isComplete, encodeHunt, decodeHunt, NATURE_ITEMS, REACH } from '../js/hunt.js';
 import { newCode, cleanCode, formatCode, channel, seal, unseal, Relay } from '../js/share.js';
 import { indexConditions, conditionsAlong, conditionText } from '../js/reference.js';
 
@@ -56,6 +57,53 @@ function walk({ seconds, stepsPerSecond, swing, noise = 0.25, hz = 60, seed = 3 
   const ride = kcalOfRide([[...pts(0, 600), ...pts(900, 600)]], { kind: 'foot' }, 80);
   const moving = kcalFor('foot', 1.3 * 3.6, 1198, 80);
   check('calories: a stop in the middle of a ride is not counted', Math.abs(ride - moving) < 0.5, `${ride.toFixed(1)} vs ${moving.toFixed(1)} kcal`);
+}
+
+// ---- time ------------------------------------------------------------------------------------
+{
+  // 10 minutes moving (a point a second), a 5 minute stop, 10 more minutes moving, in two pieces.
+  const run = (from, n) => Array.from({ length: n }, (_, i) => ({ t: (from + i) * 1000 }));
+  const moving = movingTimeOf([[...run(0, 600), ...run(900, 300)], run(1200, 300)]);
+  check('time: moving time leaves out a 5 minute stop', moving === (599 + 299 + 299) * 1000, `${moving / 1000} s of ${1499} s elapsed`);
+  check('time: no points, no moving time', movingTimeOf([]) === 0 && movingTimeOf([[{ t: 5 }]]) === 0);
+}
+
+// ---- scavenger hunts ---------------------------------------------------------------------------
+{
+  let s = 9;
+  const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+  const nature = natureHunt(8, rnd);
+  check('hunt: a nature hunt has the number of things asked for, all different',
+    nature.items.length === 8 && new Set(nature.items.map((i) => i.name)).size === 8 && nature.items.every((i) => i.kind === 'photo' && NATURE_ITEMS.includes(i.name)));
+  check('hunt: asking for more than exist gives them all', natureHunt(500, rnd).items.length === NATURE_ITEMS.length);
+
+  const pins = [{ name: 'Old bridge', lat: 44.9300, lon: -75.8200 }, { name: 'Deer stand', lat: 44.9320, lon: -75.8200 }];
+  const places = placesHunt(pins, 'Find the spots');
+  const progress = { found: {} };
+  const at = (lat, lon) => ({ lat, lon, acc: 5 });
+  check('hunt: far from every place, nothing is found', placesReached(places, progress, at(44.9310, -75.8200)).length === 0);
+  const near = placesReached(places, progress, at(44.9300 + (REACH - 5) / 111320, -75.8200));
+  check('hunt: within reach of a place finds it', near.length === 1 && near[0].name === 'Old bridge');
+  check('hunt: just outside reach does not', placesReached(places, progress, at(44.9300 + (REACH + 5) / 111320, -75.8200)).length === 0);
+  progress.found[near[0].id] = { t: 1 };
+  check('hunt: a place already found is not found twice', placesReached(places, progress, at(44.9300, -75.8200)).length === 0);
+  check('hunt: progress counts', foundCount(places, progress) === 1 && !isComplete(places, progress));
+  progress.found[places.items[1].id] = { t: 2 };
+  check('hunt: finding everything completes it', isComplete(places, progress));
+  check('hunt: hint gives distance and direction', hintFor(places.items[1], at(44.9300, -75.8200)) === 'about 220 m to the north', hintFor(places.items[1], at(44.9300, -75.8200)));
+  check('hunt: hint to the south-west', /south-west$/.test(hintFor({ lat: 44.92, lon: -75.83 }, at(44.93, -75.82))), hintFor({ lat: 44.92, lon: -75.83 }, at(44.93, -75.82)));
+  check('hunt: hint says so when very close', hintFor(places.items[0], at(44.93001, -75.8200)) === 'Very close: look around!');
+
+  const mixed = { ...places, by: 'Adam', hints: false, items: [...places.items, { id: 'x', kind: 'photo', name: 'Mushroom', clue: 'Look under the pines & "oaks"' }] };
+  const code = encodeHunt(mixed), back = decodeHunt(code);
+  check('hunt: a shared code contains only link-safe characters', /^[A-Za-z0-9_-]+$/.test(code), `${code.length} characters`);
+  check('hunt: a hunt survives being shared and joined',
+    back.name === 'Find the spots' && back.by === 'Adam' && back.hints === false && back.items.length === 3
+    && back.items[0].kind === 'place' && Math.abs(back.items[0].lat - 44.93) < 1e-6 && back.items[2].kind === 'photo' && back.items[2].clue === mixed.items[2].clue);
+  check('hunt: it can be joined from a whole link', decodeHunt(`https://example.org/app/?x=1#hunt=${code}`)?.items.length === 3);
+  check('hunt: nonsense is refused', decodeHunt('hello') === null && decodeHunt('') === null && decodeHunt(encodeHunt({ name: 'x', items: [] })) === null);
+  const bad = btoa(JSON.stringify({ n: 'x', i: [[1, 'Nowhere', '', 999, 0]] })).replace(/=+$/, '');
+  check('hunt: a place with impossible coordinates is refused', decodeHunt(bad) === null);
 }
 
 // ---- elevation: a walk over a 20 m hill, with GPS height jitter ---------------------------------

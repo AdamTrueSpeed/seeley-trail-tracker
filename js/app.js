@@ -9,10 +9,11 @@ import { buildKml, buildKmz, parseKml, readKmlFile, TRAIL_COLORS } from './kml.j
 import { prepareReference, nameSegments, coverage, overlapShare, indexConditions, conditionsAlong, conditionText } from './reference.js';
 import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
-import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf } from './activity.js';
+import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf, movingTimeOf, STOP_GAP } from './activity.js';
+import { natureHunt, placesHunt, photoItem, placesReached, hintFor, foundCount, isComplete, encodeHunt, decodeHunt, REACH, NATURE_ITEMS } from './hunt.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.9';
+const VERSION = '1.10';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -143,15 +144,44 @@ function parseWidth(text) {
   return v >= 0.2 && v <= 5 ? Math.round(v * 100) / 100 : null;
 }
 
+// ---- time ---------------------------------------------------------------------------
+//
+// Two figures for every ride. "Time" is the stopwatch: from the first recorded
+// point to FINISH, leaving out whatever was spent on PAUSE. "Moving time"
+// counts only the stretches where the rider was actually going somewhere.
+
+/** The stopwatch's clock: the phone's own. (The simulated GPS of demo mode runs fast, so there its clock is used.) */
+const clockNow = () => (DEMO && tracker?.lastFix ? tracker.lastFix.t : Date.now());
+
+/** How long a ride took, in ms. For the ride being recorded it runs up to now. */
+function timeOf(ride) {
+  const live = ride === state.current;
+  if (live && !ride.count) return 0; // the clock starts with the first recorded point
+  const end = live ? (ride.pausedAt ?? clockNow()) : (ride.finishedAt ?? ride.endedAt ?? 0);
+  return Math.max(0, end - (ride.clockAt ?? ride.startedAt ?? 0) - (ride.pausedMs ?? 0));
+}
+
+/** Time spent actually moving, in ms, from the ride's recorded points. */
+const movingOf = (ride) => movingTimeOf(state.tracks.get(ride.id) ?? []);
+
+/** Close off a pause that is under way (the ride is resumed, finished, or picked up again after the app closed). */
+function endPause(ride, until = clockNow(), since = ride.pausedAt) {
+  if (since) ride.pausedMs = (ride.pausedMs ?? 0) + Math.max(0, until - since);
+  ride.pausedAt = null;
+}
+
+const fmtSpeed = (metres, ms) => (ms > 0 ? `${(metres / (ms / 3600000) / 1000).toFixed(1)} km/h` : '');
+
 /** Distance, time and ride count for each method of travel, furthest first. */
 function totalsByMethod(rides) {
   const by = new Map();
   for (const r of rides) {
     const name = methodOf(r).name;
-    const e = by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, time: 0, kcal: 0, steps: 0 }).get(name);
+    const e = by.get(name) ?? by.set(name, { name, rides: 0, dist: 0, time: 0, moving: 0, kcal: 0, steps: 0 }).get(name);
     e.rides++;
     e.dist += r.dist ?? 0;
-    e.time += Math.max(0, (r.endedAt ?? 0) - (r.startedAt ?? 0));
+    e.time += timeOf(r);
+    e.moving += movingOf(r);
     e.kcal += kcalOf(r);
     e.steps += stepsOf(r) ?? 0;
   }
@@ -178,14 +208,17 @@ const fmtClock = (ms) => {
   const s = Math.max(0, Math.round(ms / 1000));
   return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 };
+/** The same, without the hours until there are some: "12:34", then "1:02:34". */
+const fmtStopwatch = (ms) => fmtClock(ms).replace(/^0:0?/, '');
 
 // While a ride is being recorded.
-const activity = { detector: null, stopMotion: null, sensor: false, kcal: 0 };
+const activity = { detector: null, stopMotion: null, sensor: false, kcal: 0, moving: 0 };
 
 /** Start counting for the current ride. Call straight after the tap that starts it (iPhones only allow the motion-sensor question then). */
 async function startActivity(ride) {
   stopActivity();
   activity.kcal = kcalOf(ride); // not zero when an unfinished ride is being continued
+  activity.moving = movingOf(ride);
   activity.sensor = false;
   if (methodOf(ride).kind !== 'foot') return;
   const detector = new StepDetector();
@@ -218,11 +251,12 @@ function updateActivity() {
     return;
   }
   noteSteps(ride);
-  $('act-time').textContent = fmtClock(ride.endedAt - ride.startedAt);
+  $('act-moving').textContent = `moving ${fmtStopwatch(activity.moving)}`;
   $('act-steps').textContent = stepsText(ride);
   $('act-kcal').textContent = fmtKcal(activity.kcal);
   const elev = elevationOf(state.tracks.get(ride.id) ?? []);
   $('act-elev').textContent = elev ? `↕ ${Math.round(elev.diff)} m` : '';
+  $('act-pts').textContent = `${tracker.count} pts`;
   const pill = $('cond-pill');
   pill.hidden = false;
   pill.textContent = `TRAIL: ${ride.cond ? ride.cond.toUpperCase() : 'NOT SET'}`;
@@ -249,10 +283,13 @@ function conditionsOfRide(ride) {
 /** The end-of-ride report, one fact per line. */
 function reportLines(ride) {
   const m = methodOf(ride), elev = elevOf(ride), conds = conditionsOfRide(ride);
+  const time = timeOf(ride), moving = movingOf(ride);
   return [
     `${m.name} · ${fmtDate(ride.startedAt)} · ${byName(ride)}`,
     `Distance: ${fmtDist(ride.dist)}`,
-    `Time: ${fmtClock(ride.endedAt - ride.startedAt)}`,
+    `Time: ${fmtClock(time)}`,
+    `Moving time: ${fmtClock(moving)}${time > moving + 30000 ? ` (stopped for ${fmtDur(time - moving)})` : ''}`,
+    moving > 0 ? `Average speed while moving: ${fmtSpeed(ride.dist, moving)}` : null,
     stepsOf(ride) != null ? `Steps: ${stepsText(ride).replace(' steps', '')}` : null,
     `Calories: ${fmtKcal(kcalOf(ride))}`,
     elev ? `Highest point: ${Math.round(elev.high)} m` : 'Elevation: not enough GPS height readings',
@@ -471,7 +508,7 @@ function updateStats() {
   const v = fresh && tracker.good && !tracker.autoPaused ? tracker.good.v * 3.6 : 0;
   $('st-speed').textContent = v < 10 ? v.toFixed(1) : Math.round(v);
   $('st-dist').textContent = ((state.current ? tracker.dist : 0) / 1000).toFixed(2);
-  $('st-pts').textContent = state.current ? tracker.count : 0;
+  updateClock();
   updateActivity();
   updatePocket();
   const acc = $('st-acc'), fix = tracker.lastFix;
@@ -482,6 +519,13 @@ function updateStats() {
     acc.textContent = fix.acc >= 100 ? '99+' : Math.round(fix.acc);
     acc.className = fix.acc <= settings.maxAcc * 0.55 ? 'good' : fix.acc <= settings.maxAcc ? 'fair' : 'bad';
   }
+}
+
+/** The stopwatch at the top of the ride screen. It has its own tick, once a second. */
+function updateClock() {
+  const el = $('st-time'), text = fmtStopwatch(state.current ? timeOf(state.current) : 0);
+  el.textContent = text;
+  el.classList.toggle('long', text.length > 5);
 }
 
 function updateStatus() {
@@ -650,12 +694,19 @@ function onPoint(p, newSeg) {
   const prev = seg[seg.length - 1];
   if (ride.cond) p.cond = ride.cond; // the trail condition in force when this point was recorded
   seg.push(p);
-  if (prev) { // calories for the stretch just covered (a long gap means a stop, which is not counted)
+  if (prev) { // moving time and calories for the stretch just covered (a long gap means a stop, which is not counted)
     const dt = (p.t - prev.t) / 1000;
-    if (dt > 0 && dt <= 15) activity.kcal += kcalFor(effortOf(methodOf(ride)), (p.spd ?? 0) * 3.6, dt, settings.weightKg);
+    if (dt > 0 && dt <= STOP_GAP) {
+      activity.moving += dt * 1000;
+      activity.kcal += kcalFor(effortOf(methodOf(ride)), (p.spd ?? 0) * 3.6, dt, settings.weightKg);
+    }
   }
   rideMap.addLive(p.lat, p.lon, newSeg);
-  if (tracker.count === 1) ride.startedAt = p.t;
+  if (tracker.count === 1) { // the clock starts here, not at the tap on START RIDE
+    ride.startedAt = p.t;
+    ride.clockAt = clockNow();
+    ride.pausedMs = 0;
+  }
   ride.endedAt = p.t;
   ride.dist = tracker.dist;
   ride.count = tracker.count;
@@ -675,14 +726,17 @@ function onFix(fix, verdict) {
   // Does nothing at all in private mode.
   if (verdict === 'ok') {
     share.update(fix, { method: methodOf(state.current ?? { vehicle: settings.vehicle }).short, rec: tracker.state === 'recording' }).catch(() => {});
+    checkHuntPlaces(fix);
   }
   updateStats();
   updateStatus();
+  updateHuntLive();
 }
 
 async function finishRide() {
   const ride = state.current;
   if (!ride) return;
+  const tappedAt = clockNow(), countAtTap = tracker.count;
   const n = doneRides().length + 1;
   noteSteps(ride);
   const effort = [stepsText(ride), fmtKcal(activity.kcal)].filter(Boolean).join(' · ');
@@ -694,7 +748,7 @@ async function finishRide() {
     })
     : await ask({
       title: 'Save this ride',
-      body: `${fmtDist(tracker.dist)} · ${methodOf(ride).name} · ${effort}. Give it a name, such as the trail or loop you covered.`,
+      body: `${fmtDist(tracker.dist)} in ${fmtClock(timeOf(ride))} · ${methodOf(ride).name} · ${effort}. Give it a name, such as the trail or loop you covered.`,
       input: { value: `Ride ${n}`, placeholder: 'e.g. Ride 1 - North Loop' },
       buttons: [
         { label: 'SAVE RIDE', value: 'save', cls: 'go' },
@@ -722,6 +776,9 @@ async function finishRide() {
     state.rides = state.rides.filter((r) => r !== ride);
     state.tracks.delete(ride.id);
   } else {
+    // The clock stops at the tap on FINISH, unless more was recorded while the question was on screen.
+    ride.finishedAt = tracker.count > countAtTap ? clockNow() : tappedAt;
+    endPause(ride, ride.finishedAt);
     ride.name = res.text || `Ride ${n}`;
     ride.status = 'done';
     await db.put('rides', ride);
@@ -807,10 +864,11 @@ async function dropPin() {
 // gets no GPS) while the camera is up.
 
 let photoSpot = null;
-function takePhoto() {
+/** @param huntItem the id of the scavenger-hunt item this photo is for, if it is for one */
+function takePhoto(huntItem = null) {
   const spot = spotNow();
   if (!spot) return;
-  photoSpot = { ...spot, t: Date.now(), ride: state.current?.id ?? null };
+  photoSpot = { ...spot, t: Date.now(), ride: state.current?.id ?? null, huntItem };
   $('photo-input').click(); // must happen inside the tap, or the phone refuses to open the camera
 }
 
@@ -860,21 +918,31 @@ $('photo-input').addEventListener('change', async (e) => {
   }
   const n = state.pins.filter((p) => p.photo).length + 1;
   const preview = URL.createObjectURL(picture.blob);
-  const res = await ask({
-    title: 'Name this photo',
-    body: spot.fresh ? `Pinned where you took it (±${Math.round(spot.fix.acc)} m).`
-      : `Pinned where you took it, but GPS was weak (±${Math.round(spot.fix.acc)} m), so the spot may be off.`,
-    image: preview,
-    input: { placeholder: 'e.g. Washout by the creek' },
-    chips: photoLabels(),
-    focus: false,
-    buttons: [{ label: 'SAVE PHOTO', value: 'save', cls: 'info' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
-  });
+  // A photo taken for a scavenger hunt already has its name: the thing that was being looked for.
+  const quarry = spot.huntItem && game?.status === 'active'
+    ? game.hunt.items.find((it) => it.id === spot.huntItem && !game.found[it.id]) : null;
+  const res = quarry
+    ? await ask({
+      title: `Found: ${quarry.name}?`,
+      body: 'Use this photo as your find? It is pinned to the map where you took it.',
+      image: preview,
+      buttons: [{ label: 'YES, FOUND IT', value: 'save', cls: 'go' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
+    })
+    : await ask({
+      title: 'Name this photo',
+      body: spot.fresh ? `Pinned where you took it (±${Math.round(spot.fix.acc)} m).`
+        : `Pinned where you took it, but GPS was weak (±${Math.round(spot.fix.acc)} m), so the spot may be off.`,
+      image: preview,
+      input: { placeholder: 'e.g. Washout by the creek' },
+      chips: photoLabels(),
+      focus: false,
+      buttons: [{ label: 'SAVE PHOTO', value: 'save', cls: 'info' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
+    });
   URL.revokeObjectURL(preview);
   if (res.button === 'discard') return;
   // Backing out of the question keeps the photo, under a plain name: it cannot be retaken.
   const pin = {
-    id: Date.now(), ride: spot.ride, name: res.text.slice(0, 60) || `Photo ${n}`, by: settings.userName,
+    id: Date.now(), ride: spot.ride, name: quarry?.name ?? (res.text.slice(0, 60) || `Photo ${n}`), by: settings.userName,
     lat: spot.fix.lat, lon: spot.fix.lon, alt: spot.fix.alt, acc: spot.fix.acc, t: spot.t,
     photo: true, thumb: picture.thumb,
   };
@@ -889,7 +957,8 @@ $('photo-input').addEventListener('change', async (e) => {
   if (res.text) rememberPinLabel(pin.name);
   rideMap.setPins(state.pins);
   if (state.view === 'rides') renderRides();
-  toast(`Photo saved: ${pin.name}`);
+  if (quarry) markFound(quarry, { pin: pin.id });
+  else toast(`Photo saved: ${pin.name}`);
 });
 
 /** The full picture of a photo pin as a Blob, or null if it is missing. */
@@ -929,6 +998,7 @@ async function recoverUnfinished() {
       buttons: [{ label: 'CONTINUE THIS RIDE', value: 'resume', cls: 'go' }, { label: 'Save it as it is', value: 'save' }],
     });
     if (res.button === 'resume' && !state.current) {
+      endPause(ride, Date.now(), ride.pausedAt ?? m.endedAt); // the time the app was closed does not count
       state.current = ride;
       rideMap.clearLive();
       for (const s of segs) s.forEach((p, i) => rideMap.addLive(p.lat, p.lon, i === 0));
@@ -955,7 +1025,7 @@ function renderRides() {
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
       <div data-act="report"><div class="name">${esc(r.name)}</div>
-        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(r.endedAt - r.startedAt)} · ${
+        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(timeOf(r))} · ${
   [stepsText(r), fmtKcal(kcalOf(r)), elevOf(r) ? `↕ ${Math.round(elevOf(r).diff)} m` : ''].filter(Boolean).join(' · ')}</div></div>
       <div class="acts five"><button data-act="report">Report</button><button data-act="rename">Rename</button><button data-act="vehicle">Method</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
@@ -966,14 +1036,14 @@ function renderRides() {
   const totals = totalsByMethod(rides);
   if (totals.length > 1) {
     totals.push(totals.reduce((a, t) => ({
-      ...a, rides: a.rides + t.rides, dist: a.dist + t.dist, time: a.time + t.time, kcal: a.kcal + t.kcal, steps: a.steps + t.steps,
-    }), { name: 'All travel', rides: 0, dist: 0, time: 0, kcal: 0, steps: 0, all: true }));
+      ...a, rides: a.rides + t.rides, dist: a.dist + t.dist, time: a.time + t.time, moving: a.moving + t.moving, kcal: a.kcal + t.kcal, steps: a.steps + t.steps,
+    }), { name: 'All travel', rides: 0, dist: 0, time: 0, moving: 0, kcal: 0, steps: 0, all: true }));
   }
   $('totals').hidden = !rides.length;
   $('totals-list').innerHTML = totals.map((t) => `
     <li class="${t.all ? 'all' : ''}"><span class="dot" style="background:${t.all ? '#fff' : 'var(--live)'}"></span>
-      <span>${esc(t.name)} <span class="sub">${t.rides} ride${t.rides === 1 ? '' : 's'} · ${fmtDur(t.time)} · ${fmtKcal(t.kcal)}${t.steps ? ` · ${t.steps.toLocaleString()} steps` : ''}</span></span>
-      <span class="pct">${fmtDist(t.dist)}</span></li>`).join('');
+      <span>${esc(t.name)} <span class="sub">${t.rides} ride${t.rides === 1 ? '' : 's'} · moving ${fmtDur(t.moving)} · ${fmtKcal(t.kcal)}${t.steps ? ` · ${t.steps.toLocaleString()} steps` : ''}</span></span>
+      <span class="pct two">${fmtDist(t.dist)}<i>${fmtDur(t.time)}</i></span></li>`).join('');
 
   $('pin-list').replaceChildren(...state.pins.map((p) => {
     const ride = state.rides.find((r) => r.id === p.ride);
@@ -1633,6 +1703,356 @@ $('veh-list').addEventListener('click', async (e) => {
   renderSettings();
 });
 
+// ---- scavenger hunt ------------------------------------------------------------------
+//
+// See hunt.js for what a hunt is. This phone keeps one hunt at a time, with
+// what has been found so far, so it is still there after the app is closed:
+//   game = { hunt, status: 'draft' | 'active' | 'done', joined, found: { [itemId]: { t, pin } }, startedAt, finishedAt }
+// "joined" means the hunt came from someone else and is played as it was sent.
+
+const MAX_HUNT_ITEMS = 40;
+let game = readJson('tt-hunt');
+if (!game.hunt) game = null;
+
+const huntHistory = () => (Array.isArray(readJson('tt-hunt-history')) ? readJson('tt-hunt-history') : []);
+const huntTime = () => (game?.startedAt ? (game.finishedAt ?? Date.now()) - game.startedAt : 0);
+const huntScore = () => `${foundCount(game.hunt, game)} of ${game.hunt.items.length}`;
+const huntLink = () => `${SHARE_URL}#hunt=${encodeHunt(game.hunt)}`;
+
+function setGame(next) {
+  game = next;
+  if (game) localStorage.setItem('tt-hunt', JSON.stringify(game)); else localStorage.removeItem('tt-hunt');
+  renderHunt();
+}
+
+/** The latest position of any quality, or null: for hints, which are not worth a "no GPS" message. */
+function hereNow() {
+  if (!tracker || Date.now() - state.fixAt > 15000) return null;
+  return Date.now() - state.goodAt < 15000 ? tracker.good : tracker.lastFix;
+}
+
+async function newNatureHunt() {
+  const res = await ask({
+    title: 'How many things to find?',
+    body: 'Each one is found by taking its photo. The list is picked at random, and you can change it before you start.',
+    chips: ['5 things', '8 things', '12 things'],
+    pick: true,
+    buttons: [{ label: 'Cancel', value: 'cancel' }],
+  });
+  if (res.button !== 'chip') return;
+  setGame({ hunt: { ...natureHunt(parseInt(res.text, 10)), by: settings.userName ?? '' }, status: 'draft', found: {} });
+}
+
+function newPlacesHunt() {
+  if (state.pins.length < 2) {
+    toast('Drop at least two pins first: each pin becomes a place to find.', 5000);
+    return;
+  }
+  // With a great many pins, the newest ones.
+  const hunt = placesHunt(state.pins.slice(-MAX_HUNT_ITEMS), `${systemName()} hunt`);
+  setGame({ hunt: { ...hunt, by: settings.userName ?? '' }, status: 'draft', found: {} });
+}
+
+/** Open a hunt someone sent. `text` is their link or code; without it, ask for one. */
+async function joinHunt(text = null) {
+  if (text == null) {
+    const res = await ask({
+      title: 'Join a hunt',
+      body: 'Paste the link or the code a friend sent you.',
+      input: { placeholder: 'Paste it here' },
+      buttons: [{ label: 'JOIN', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (res.button !== 'save' || !res.text) return;
+    text = res.text;
+  }
+  const hunt = decodeHunt(text);
+  if (!hunt) {
+    toast('That is not a hunt link or code. Ask your friend to send it again.', 5000);
+    return;
+  }
+  if (game?.status === 'active') {
+    const sure = await ask({
+      title: 'Swap to the new hunt?',
+      body: `You are in the middle of "${game.hunt.name}" (${huntScore()} found). Opening "${hunt.name}" ends it.`,
+      buttons: [{ label: 'Keep my hunt', value: 'cancel', cls: 'go' }, { label: 'Swap', value: 'yes', cls: 'warn' }],
+    });
+    if (sure.button !== 'yes') return;
+    if (game?.status === 'active') finishHunt();
+  }
+  setGame({ hunt, status: 'draft', joined: true, found: {} });
+  showView('hunt');
+}
+
+/** Changes to a hunt that has not started yet. */
+async function editHunt(act, item) {
+  const hunt = game.hunt;
+  const save = [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }];
+  if (act === 'remove') {
+    hunt.items = hunt.items.filter((it) => it !== item);
+  } else if (act === 'clue') {
+    const res = await ask({
+      title: `Clue for "${item.name}"`,
+      body: 'One line to help people find it. Leave it empty for no clue.',
+      input: { value: item.clue ?? '', placeholder: 'e.g. Where the creek crosses the trail' },
+      buttons: save,
+    });
+    if (res.button !== 'save') return;
+    item.clue = res.text.slice(0, 120);
+  } else if (act === 'add') {
+    if (hunt.items.length >= MAX_HUNT_ITEMS) {
+      toast(`A hunt holds up to ${MAX_HUNT_ITEMS} things.`);
+      return;
+    }
+    const have = new Set(hunt.items.map((it) => it.name.toLowerCase()));
+    const res = await ask({
+      title: 'Add something to photograph',
+      input: { placeholder: 'e.g. A red leaf' },
+      chips: NATURE_ITEMS.filter((n) => !have.has(n.toLowerCase())).slice(0, 8),
+      focus: false,
+      buttons: [{ label: 'ADD IT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (res.button !== 'save' || !res.text) return;
+    hunt.items.push(photoItem(res.text.slice(0, 60)));
+  } else if (act === 'rename') {
+    const res = await ask({ title: 'Name of this hunt', input: { value: hunt.name }, buttons: save });
+    if (res.button !== 'save' || !res.text) return;
+    hunt.name = res.text.slice(0, 60);
+  } else if (act === 'hints') {
+    hunt.hints = !hunt.hints;
+  }
+  setGame(game);
+}
+
+function startHunt() {
+  if (game?.status !== 'draft') return;
+  if (!game.hunt.items.length) {
+    toast('Add something to find first.');
+    return;
+  }
+  Object.assign(game, { status: 'active', found: {}, startedAt: Date.now(), finishedAt: null });
+  setGame(game);
+  if (tracker.geo && !state.gpsWanted) startGps(); // places are found by GPS, and photos are pinned by it
+  toast('The hunt is on!');
+  const here = hereNow();
+  if (here && Date.now() - state.goodAt < 15000) checkHuntPlaces(here);
+}
+
+/** Close the hunt that is being played and put it in the list of finished ones. */
+function finishHunt() {
+  game.status = 'done';
+  game.finishedAt = Date.now();
+  const entry = { name: game.hunt.name, found: foundCount(game.hunt, game), total: game.hunt.items.length, ms: huntTime(), at: game.finishedAt };
+  localStorage.setItem('tt-hunt-history', JSON.stringify([entry, ...huntHistory()].slice(0, 20)));
+  setGame(game);
+}
+
+function markFound(item, how = {}) {
+  if (game?.status !== 'active' || game.found[item.id]) return;
+  game.found[item.id] = { t: Date.now(), ...how };
+  try { navigator.vibrate?.(200); } catch { /* not allowed, or no buzzer */ }
+  if (!isComplete(game.hunt, game)) {
+    setGame(game);
+    toast(`Found: ${item.name} (${huntScore()})`);
+    return;
+  }
+  finishHunt();
+  const line = `All ${game.hunt.items.length} found in ${fmtClock(huntTime())}.`;
+  // No question on top of another question, and nothing bright while the phone is in a pocket.
+  if ($('dlg').open || !$('pocket').hidden) {
+    toast(`Hunt complete! ${line}`, 8000);
+    return;
+  }
+  ask({
+    title: 'Hunt complete!',
+    body: line,
+    buttons: [{ label: 'SHARE MY RESULT', value: 'share', cls: 'go' }, { label: 'OK', value: 'cancel' }],
+  }).then((res) => { if (res.button === 'share') shareResult(); });
+}
+
+/** Called with every good GPS position: has it brought us to one of the places? */
+function checkHuntPlaces(fix) {
+  if (game?.status !== 'active') return;
+  for (const item of placesReached(game.hunt, game, fix)) markFound(item);
+}
+
+async function endHunt() {
+  const res = await ask({
+    title: 'End this hunt?',
+    body: `${huntScore()} found so far. It goes in your list of finished hunts as it stands.`,
+    buttons: [{ label: 'Keep hunting', value: 'cancel', cls: 'go' }, { label: 'End hunt', value: 'yes', cls: 'stop' }],
+  });
+  if (res.button === 'yes' && game?.status === 'active') finishHunt();
+}
+
+/** Hand a message to the phone's share sheet, or copy it where there is none. */
+async function shareMessage(message, copied) {
+  if (navigator.share) {
+    try { await navigator.share(message); } catch { /* cancelled */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(`${message.text} ${message.url}`);
+    toast(copied, 4500);
+  } catch {
+    toast(message.url, 8000);
+  }
+}
+
+const HOW_TO_JOIN = 'Open this link to play. (If it opens outside the app, copy the link and use Hunt > Join a hunt in the app.)';
+const sendHunt = () => shareMessage({
+  title: game.hunt.name,
+  text: `Join my scavenger hunt "${game.hunt.name}" on Seeley Trail Tracker: ${game.hunt.items.length} things to find. ${HOW_TO_JOIN}`,
+  url: huntLink(),
+}, 'Copied. Paste it into a message to your friends.');
+const shareResult = () => shareMessage({
+  title: game.hunt.name,
+  text: `I found ${huntScore()} in the scavenger hunt "${game.hunt.name}" on Seeley Trail Tracker, in ${fmtClock(huntTime())}. Can you beat that? ${HOW_TO_JOIN}`,
+  url: huntLink(),
+}, 'Copied. Paste it into a message.');
+
+function huntRow(item, i) {
+  const found = game.found[item.id], playing = game.status === 'active', editing = game.status === 'draft' && !game.joined;
+  const pin = found?.pin ? state.pins.find((p) => p.id === found.pin) : null;
+  const how = item.kind === 'place' ? `Get yourself there (within ${REACH} m)` : 'Take its photo';
+  const when = found ? ` · found at ${new Date(found.t).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : '';
+  const acts = editing ? '<button data-act="clue">Clue</button><button data-act="remove" class="del">Remove</button>'
+    : playing && !found && item.kind === 'photo' ? '<button data-act="photo" class="go">TAKE PHOTO</button><button data-act="tick">Just tick it</button>' : '';
+  return `
+    <li class="hunt-item ${found ? 'found' : ''}" data-id="${esc(item.id)}">
+      ${pin?.thumb ? `<img class="thumb" src="${esc(pin.thumb)}" alt="" data-act="view">` : `<div class="mark">${found ? '✓' : i + 1}</div>`}
+      <div><div class="name">${esc(item.name)}</div>
+        <div class="meta">${how}${when}</div>
+        ${item.clue ? `<div class="meta">Clue: <b>${esc(item.clue)}</b></div>` : ''}
+        ${playing && !found && item.kind === 'place' && game.hunt.hints ? `<div class="hintline" data-hint="${esc(item.id)}"></div>` : ''}</div>
+      ${acts ? `<div class="acts">${acts}</div>` : ''}
+    </li>`;
+}
+
+function renderHunt() {
+  const pill = $('hunt-pill');
+  pill.hidden = game?.status !== 'active';
+  if (!pill.hidden) pill.textContent = `HUNT ${foundCount(game.hunt, game)}/${game.hunt.items.length}`;
+  if (state.view !== 'hunt') return;
+
+  const past = huntHistory();
+  $('hunt-past').hidden = !past.length;
+  $('hunt-history').innerHTML = past.map((h) => `
+    <li><span class="dot" style="background:${h.found === h.total ? 'var(--go)' : '#555'}"></span>
+      <span>${esc(h.name)} <span class="sub">${fmtDate(h.at)} · ${fmtClock(h.ms)}</span></span>
+      <span class="pct">${h.found} of ${h.total}</span></li>`).join('');
+
+  const body = $('hunt-body');
+  if (!game) {
+    body.innerHTML = `
+      <p class="hint">A list of things to find out on the trail. Photograph each one, or get yourself to each place. Send the same hunt to friends and family and see who finishes first.</p>
+      <div class="hunt-btns">
+        <button class="big go" data-act="nature">NATURE PHOTO HUNT</button>
+        <p class="hint">Things to spot and photograph: a mushroom, animal tracks, a bird nest. Each photo is pinned to the map where you took it.</p>
+        <button class="big info" data-act="places">PLACES HUNT FROM MY PINS</button>
+        <p class="hint">Every pin you have dropped becomes a place to find. The app ticks each one off when you get within ${REACH} m of it.</p>
+        <button class="big ghost" data-act="join">JOIN A HUNT A FRIEND SENT</button>
+      </div>
+      <p class="hint">Want the walk recorded too? Press <b>START RIDE</b> on the Ride screen first. The hunt carries on either way.</p>`;
+    return;
+  }
+  const { hunt, status } = game;
+  const count = `${hunt.items.length} thing${hunt.items.length === 1 ? '' : 's'} to find`;
+  const from = hunt.by && (game.joined || hunt.by !== settings.userName) ? ` · from ${esc(hunt.by)}` : '';
+  const places = hunt.items.some((it) => it.kind === 'place');
+  const list = `<ul class="list">${hunt.items.map(huntRow).join('')}</ul>`;
+  if (status === 'draft') {
+    body.innerHTML = `
+      <div class="hunt-head"><b>${esc(hunt.name)}</b><small>${count}${from} · not started yet</small></div>
+      <div class="hunt-btns">
+        <button class="big go" data-act="start">START HUNT</button>
+        <button class="big info" data-act="send">SEND THIS HUNT TO FRIENDS</button>
+      </div>
+      ${places ? `<p class="hint">${hunt.hints ? 'Distance hints are on: players see how far away each place is, and in which direction.' : 'Distance hints are off: players get the names and clues only.'}${game.joined ? '' : ' Sending this hunt sends the positions of these places to whoever you send it to.'}</p>` : ''}
+      ${list}
+      ${game.joined ? '' : `<div class="btnrow">
+        <button class="mid" data-act="add">Add something to photograph</button>
+        <button class="mid ghost" data-act="rename">Rename</button>
+        ${places ? `<button class="mid ghost" data-act="hints">Turn hints ${hunt.hints ? 'off' : 'on'}</button>` : ''}
+      </div>`}
+      <div class="btnrow"><button class="mid ghost" data-act="cancel">Throw this hunt away</button></div>`;
+  } else if (status === 'active') {
+    body.innerHTML = `
+      <div class="hunt-head"><b>${esc(hunt.name)}</b><div class="score">${huntScore()} found</div>
+        <small><span id="hunt-clock">${fmtClock(huntTime())}</span>${from}</small></div>
+      ${list}
+      <div class="btnrow">
+        <button class="mid" data-act="send">Send this hunt to friends</button>
+        <button class="mid stop" data-act="end">End hunt</button>
+      </div>`;
+    updateHuntLive();
+  } else {
+    body.innerHTML = `
+      <div class="hunt-head"><b>${esc(hunt.name)}</b><div class="score">${huntScore()} found</div>
+        <small>in ${fmtClock(huntTime())} · finished ${fmtDate(game.finishedAt)}${from}</small></div>
+      <div class="hunt-btns"><button class="big go" data-act="result">SHARE MY RESULT</button></div>
+      ${list}
+      <div class="btnrow">
+        <button class="mid" data-act="again">Play it again</button>
+        <button class="mid ghost" data-act="new">Start a different hunt</button>
+      </div>`;
+  }
+}
+
+/** The parts of the hunt screen that change by themselves: the clock, and how far away each place is. */
+function updateHuntLive() {
+  if (state.view !== 'hunt' || game?.status !== 'active') return;
+  const clock = $('hunt-clock');
+  if (clock) clock.textContent = fmtClock(huntTime());
+  const here = hereNow();
+  for (const el of $('hunt-body').querySelectorAll('[data-hint]')) {
+    const item = game.hunt.items.find((it) => it.id === el.dataset.hint);
+    el.textContent = !item ? '' : here ? hintFor(item, here) : 'Waiting for a GPS position…';
+  }
+}
+
+$('hunt-body').addEventListener('click', async (e) => {
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (!act) return;
+  if (act === 'nature') { await newNatureHunt(); return; }
+  if (act === 'places') { newPlacesHunt(); return; }
+  if (act === 'join') { await joinHunt(); return; }
+  if (!game) return;
+  const item = game.hunt.items.find((it) => it.id === e.target.closest('li')?.dataset.id);
+  if (act === 'photo' && item) {
+    takePhoto(item.id); // straight from the tap, or the phone refuses to open the camera
+  } else if (act === 'tick' && item) {
+    markFound(item);
+  } else if (act === 'view' && item) {
+    const pin = state.pins.find((p) => p.id === game.found[item.id]?.pin);
+    if (pin) await viewPhoto(pin);
+  } else if (act === 'start') {
+    startHunt();
+  } else if (act === 'send') {
+    await sendHunt();
+  } else if (act === 'result') {
+    await shareResult();
+  } else if (act === 'end') {
+    await endHunt();
+  } else if (act === 'again') {
+    setGame({ hunt: game.hunt, status: 'draft', joined: game.joined, found: {} });
+  } else if (act === 'new') {
+    setGame(null);
+  } else if (act === 'cancel') {
+    if (!game.joined && game.hunt.items.some((it) => it.clue)) {
+      const res = await ask({
+        title: 'Throw this hunt away?',
+        body: 'The clues you wrote go with it.',
+        buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: 'Throw it away', value: 'yes', cls: 'stop' }],
+      });
+      if (res.button !== 'yes') return;
+    }
+    setGame(null);
+  } else if (game.status === 'draft' && !game.joined && ['remove', 'clue', 'add', 'rename', 'hints'].includes(act)) {
+    await editHunt(act, item);
+  }
+});
+$('hunt-pill').addEventListener('click', () => showView('hunt'));
+
 // ---- staying up to date ---------------------------------------------------------
 //
 // version.json on the website says which version is published and which files
@@ -1905,9 +2325,13 @@ if (IOS) {
 function showView(view) {
   if (view !== 'net') state.focusRide = null;
   state.view = view;
-  for (const v of ['ride', 'rides', 'net', 'settings']) $(`view-${v}`).hidden = v !== view;
+  for (const v of ['ride', 'rides', 'net', 'hunt', 'settings']) $(`view-${v}`).hidden = v !== view;
   for (const b of $('tabs').children) b.classList.toggle('active', b.dataset.view === view);
   if (view === 'rides') renderRides();
+  if (view === 'hunt') {
+    if (game?.status === 'active' && tracker?.geo && !state.gpsWanted) startGps(); // a hunt needs to know where you are
+    renderHunt();
+  }
   if (view === 'settings') renderSettings();
   if (view === 'net') {
     renderSettings();
@@ -1955,7 +2379,7 @@ function updatePocket() {
   const label = tracker.state === 'paused' ? 'PAUSED' : stale ? 'NO GPS SIGNAL' : weak ? 'WEAK GPS' : 'RECORDING';
   $('pocket-state').textContent = label;
   $('pocket-state').classList.toggle('warn', label !== 'RECORDING');
-  $('pocket-stats').textContent = `${fmtDist(tracker.dist)} · ${fmtClock(state.current.endedAt - state.current.startedAt)}`;
+  $('pocket-stats').textContent = `${fmtDist(tracker.dist)} · ${fmtClock(timeOf(state.current))}`;
 }
 
 $('btn-dark').addEventListener('click', enterDark);
@@ -1991,11 +2415,20 @@ setInterval(() => {
 }, 2000);
 $('btn-pin').addEventListener('click', dropPin);
 $('btn-pin-idle').addEventListener('click', dropPin);
-$('btn-photo').addEventListener('click', takePhoto);
-$('btn-photo-idle').addEventListener('click', takePhoto);
+$('btn-photo').addEventListener('click', () => takePhoto());
+$('btn-photo-idle').addEventListener('click', () => takePhoto());
 $('btn-pause').addEventListener('click', () => {
-  if (tracker.state === 'paused') tracker.resume(); else tracker.pause();
-  if (state.current) db.put('rides', state.current);
+  const ride = state.current;
+  if (!ride) return;
+  // The stopwatch stops while the ride is on PAUSE.
+  if (tracker.state === 'paused') {
+    endPause(ride);
+    tracker.resume();
+  } else {
+    ride.pausedAt = clockNow();
+    tracker.pause();
+  }
+  db.put('rides', ride);
 });
 $('status').addEventListener('click', () => { if (!state.gpsWanted) startGps(); });
 
@@ -2034,6 +2467,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 setInterval(() => { if (tracker) { updateStats(); updateStatus(); } }, 2000);
+setInterval(() => { if (tracker) { updateClock(); updateHuntLive(); } }, 1000); // the two stopwatches
 setInterval(() => { if (tracker && settings.sharing !== 'private') renderPeople(); }, 10000); // drops people who have gone quiet
 
 // ---- start-up -------------------------------------------------------------------
@@ -2053,6 +2487,7 @@ async function boot() {
 
   refreshRideMap();
   renderSettings();
+  renderHunt(); // puts the HUNT pill back if a hunt was under way
   rideMap.fit();
   updateRideUi();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
@@ -2082,12 +2517,14 @@ async function boot() {
   await checkInvite();
 }
 
-/** Opened from a friend's "add me" link (…#friend=CODE)? Offer to add them. */
+/** Opened from a friend's "add me" link (…#friend=CODE) or a hunt link (…#hunt=CODE)? Offer to add them, or open the hunt. */
 async function checkInvite() {
-  const invite = /[#&]friend=([^&]+)/.exec(location.hash);
-  if (!invite || $('dlg').open) return;
+  const hash = location.hash;
+  const invite = /[#&]friend=([^&]+)/.exec(hash), hunt = /[#&]hunt=/.test(hash);
+  if ((!invite && !hunt) || $('dlg').open) return;
   history.replaceState(null, '', location.pathname + location.search);
-  await addFriend(decodeURIComponent(invite[1]));
+  if (hunt) await joinHunt(hash);
+  else await addFriend(decodeURIComponent(invite[1]));
 }
 
 boot().catch((err) => {

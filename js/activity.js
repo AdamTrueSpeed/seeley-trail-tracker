@@ -69,6 +69,27 @@ export async function watchMotion(onReading) {
   return () => window.removeEventListener('devicemotion', handler);
 }
 
+// ---- time --------------------------------------------------------------------------
+
+/** A gap this long between two recorded points is a stop, not travel. */
+export const STOP_GAP = 15; // seconds
+
+/**
+ * Time spent actually moving, in ms: the time between recorded points, leaving
+ * out the gaps where the rider was stopped or paused.
+ * @param segments [[{ t }]]
+ */
+export function movingTimeOf(segments) {
+  let ms = 0;
+  for (const seg of segments) {
+    for (let i = 1; i < seg.length; i++) {
+      const dt = seg[i].t - seg[i - 1].t;
+      if (dt > 0 && dt <= STOP_GAP * 1000) ms += dt;
+    }
+  }
+  return ms;
+}
+
 // ---- elevation -------------------------------------------------------------------
 
 /**
@@ -137,7 +158,7 @@ export function kcalOfRide(segments, method, weightKg) {
   for (const seg of segments) {
     for (let i = 1; i < seg.length; i++) {
       const dt = (seg[i].t - seg[i - 1].t) / 1000;
-      if (dt > 0 && dt <= 15) kcal += kcalFor(effort, (seg[i].spd ?? 0) * 3.6, dt, weightKg);
+      if (dt > 0 && dt <= STOP_GAP) kcal += kcalFor(effort, (seg[i].spd ?? 0) * 3.6, dt, weightKg);
     }
   }
   return kcal;

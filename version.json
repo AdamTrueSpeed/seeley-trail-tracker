@@ -1,5 +1,5 @@
 {
-  "version": "1.9",
+  "version": "1.10",
   "files": [
     "./",
     "index.html",
@@ -10,6 +10,7 @@
     "js/db.js",
     "js/demo.js",
     "js/geo.js",
+    "js/hunt.js",
     "js/kml.js",
     "js/mapview.js",
     "js/merge.js",

@@ -81,7 +81,7 @@ function segmentPlacemark(s, system) {
 /**
  * @param o.name      name of the trail system (becomes the document name)
  * @param o.branches  [{ name (null = not named yet), length, segments }] the segments grouped by branch
- * @param o.travel    [{ name, rides, dist }] distance covered by each method of travel
+ * @param o.travel    [{ name, rides, dist, time }] distance (m) and time (ms) covered by each method of travel
  * @param o.segments  merged network from buildNetwork (optionally with .name / .ref / .branch / .contributors)
  * @param o.waypoints [{ name, by, lat, lon, alt, t, rideName }]
  * @param o.rides     [{ name, by, vehicle: { name }, startedAt, segments: [[{lat, lon, alt}]] }] raw tracks (hidden folder)
@@ -94,7 +94,12 @@ export function buildKml(o) {
   const total = o.segments.reduce((d, s) => d + s.length, 0);
   const who = (o.contributors ?? []).map((c) =>
     `${c.name} (${c.rides} ride${c.rides === 1 ? '' : 's'}, ${num(c.dist / 1000, 2)} km, ${c.pins} pin${c.pins === 1 ? '' : 's'})`);
-  const travel = (o.travel ?? []).map((t) => `${t.name} ${num(t.dist / 1000, 2)} km (${t.rides} ride${t.rides === 1 ? '' : 's'})`);
+  const dur = (ms) => {
+    const min = Math.round(ms / 60000);
+    return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')} min`;
+  };
+  const travel = (o.travel ?? []).map((t) =>
+    `${t.name} ${num(t.dist / 1000, 2)} km${t.time > 0 ? ` in ${dur(t.time)}` : ''} (${t.rides} ride${t.rides === 1 ? '' : 's'})`);
   const groups = o.branches ?? [{ name: null, length: total, segments: o.segments }];
   const namedBranches = groups.filter((b) => b.name !== null).length;
   const out = [];
@@ -105,7 +110,7 @@ export function buildKml(o) {
   out.push(`<description>${esc(
     `${o.name}: GPS-surveyed trail system with ${namedBranches} named branch${namedBranches === 1 ? '' : 'es'}, `
     + `${o.segments.length} segments, ${num(total, 0)} m, from ${o.rides.length} ride(s). `
-    + (travel.length ? `Distance travelled: ${travel.join('; ')}. ` : '')
+    + (travel.length ? `Distance and time travelled: ${travel.join('; ')}. ` : '')
     + (who.length ? `Contributors: ${who.join('; ')}. ` : '')
     + `Overlapping passes merged within ${o.settings.threshold} m; smoothing ${o.settings.smoothing}. `
     + 'Trail widths are rough estimates: the width of the widest thing known to have travelled each segment, with the phone on its centre line, plus any spread between passes that GPS error does not explain. '
