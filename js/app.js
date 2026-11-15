@@ -13,7 +13,7 @@ import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effo
 import { natureHunt, placesHunt, photoItem, placesReached, hintFor, foundCount, isComplete, encodeHunt, decodeHunt, REACH, NATURE_ITEMS } from './hunt.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.11';
+const VERSION = '1.12';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://adamtruespeed.github.io/seeley-trail-tracker/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -36,6 +36,7 @@ const PHOTO_LABELS = [
 // What a trail can be like underfoot. The rider picks one while recording and it sticks until changed.
 const CONDITIONS = [
   'Forest trail - rocky', 'Forest trail - wet', 'Forest trail - dirt', 'Forest trail - leafy',
+  'Walking path - gravel', 'Walking path - dirt', 'Walking path - grass', 'Walking path - paved', 'Walking path - wood chips',
   'Dry and firm', 'Grassy', 'Muddy', 'Rocky', 'Water', 'Sandy', 'Gravel', 'Roots',
   'Rutted', 'Overgrown', 'Washed out', 'Swampy', 'Snow', 'Icy',
 ];
