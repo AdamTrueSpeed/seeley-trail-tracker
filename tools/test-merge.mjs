@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildNetwork } from '../js/merge.js';
 import { makeProjection } from '../js/geo.js';
+import { estimateWidth, GRIZZLY_WIDTH } from '../js/width.js';
 
 const LAT0 = 44.9275, LON0 = -75.818;
 const proj = makeProjection(LAT0, LON0);
@@ -38,7 +39,8 @@ function ride(path, seed, { speed = 4, sigma = 2.5, corr = 60, jitter = 0.4 } = 
   const emit = (x, y) => {
     bx = rho * bx + k * g();
     by = rho * by + k * g();
-    out.push({ ...toLL([x + bx + jitter * g(), y + by + jitter * g()]), alt: 100 + 0.01 * y });
+    // acc is what the phone would report: the radius holding 68% of fixes, 1.5 standard deviations.
+    out.push({ ...toLL([x + bx + jitter * g(), y + by + jitter * g()]), alt: 100 + 0.01 * y, acc: 1.5 * Math.hypot(sigma, jitter) });
   };
   for (let i = 1; i < path.length; i++) {
     const [x0, y0] = path[i - 1], [x1, y1] = path[i];
@@ -162,6 +164,41 @@ const line = (x0, y0, x1, y1, n = 40) => Array.from({ length: n + 1 }, (_, i) =>
   // threshold cannot be told apart from two separate trails.
   const noisy = [1, 2, 3].map((s) => track('n' + s, ride(a, 50 + s, { sigma: 5 })));
   check('poor GPS (5 m error), threshold 20 m', noisy, [a], { segments: [1, 1], ratio: [0.95, 1.1], meanErr: 6, worstErr: 15 }, { threshold: 20 });
+}
+
+// ---- trail width from repeated passes ---------------------------------------------------
+// The rider's line is offset sideways by a known amount on each pass, so the true
+// width (outermost lines apart + vehicle) is known and can be compared.
+{
+  const base = line(-200, 0, 200, 0);
+  const lane = (dy) => base.map(([x, y]) => [x, y + dy]);
+  function widthCheck(name, offsets, gps, expect, opts = {}) {
+    const trueWidth = Math.max(...offsets) - Math.min(...offsets) + GRIZZLY_WIDTH;
+    const widths = [], bases = new Set();
+    for (let trial = 0; trial < 20; trial++) {
+      const tracks = offsets.map((dy, k) => track('p' + k, ride(k % 2 ? rev(lane(dy)) : lane(dy), 900 + trial * 37 + k, gps)));
+      const net = buildNetwork(tracks, { threshold: 8, smoothing: 3, ...opts });
+      const seg = net.segments.reduce((a, b) => (b.length > a.length ? b : a));
+      const w = estimateWidth(seg.spread);
+      widths.push(w.width);
+      bases.add(w.basis);
+    }
+    widths.sort((a, b) => a - b);
+    const med = widths[widths.length >> 1], lo = widths[1], hi = widths[widths.length - 2];
+    const ok = med >= expect[0] && med <= expect[1];
+    if (!ok) failures++;
+    console.log(`${ok ? 'ok  ' : 'FAIL'} width: ${name.padEnd(42)} true ${trueWidth.toFixed(1)} m -> typical ${med.toFixed(1)} m`
+      + ` (most runs ${lo.toFixed(1)}-${hi.toFixed(1)} m)  ${[...bases].join(', ')}`);
+    if (!ok) console.log(`       - typical estimate outside ${expect[0]}-${expect[1]} m`);
+  }
+  const phone = { sigma: 2.5 }, good = { sigma: 0.6, jitter: 0.2 };
+  widthCheck('one pass', [0], phone, [1.23, 1.23]);
+  widthCheck('narrow trail, 2 passes, phone GPS', [0, 0], phone, [1.23, 3.5]);
+  widthCheck('narrow trail, 6 passes, phone GPS', [0, 0.3, -0.3, 0.2, -0.2, 0], phone, [1.23, 3.5]);
+  widthCheck('4 m track ridden edge to edge, phone GPS', [-1.4, 1.4, -1.4, 1.4, -1.4, 1.4], phone, [1.23, 5.5]);
+  widthCheck('10 m wide lane, 6 passes, phone GPS', [-4.4, -2.6, -0.9, 0.9, 2.6, 4.4], phone, [6, 14], { threshold: 12 });
+  widthCheck('10 m wide lane, 6 passes, survey-grade GPS', [-4.4, -2.6, -0.9, 0.9, 2.6, 4.4], good, [8, 12], { threshold: 12 });
+  widthCheck('4 m track edge to edge, survey-grade GPS', [-1.4, 1.4, -1.4, 1.4, -1.4, 1.4], good, [3, 5]);
 }
 
 // ---- the real trail network -----------------------------------------------------------

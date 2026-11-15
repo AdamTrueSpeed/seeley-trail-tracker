@@ -10,9 +10,13 @@
 import { makeProjection, haversine, rdp, resample, clamp } from './geo.js';
 
 /**
- * @param tracks [{ name, segments: [[{lat, lon, alt}]] }] in the order ridden
+ * @param tracks [{ name, segments: [[{lat, lon, alt, acc}]] }] in the order ridden
  * @param opts   { threshold: metres, smoothing: 0..10 }
- * @returns { segments: [{ id, points, length, passes, sources, rides }], stats }
+ * @returns { segments: [{ id, points, length, passes, spread, sources, rides }], stats }
+ *          spread = { passes, range, sd, acc, length }: how many passes were compared,
+ *          the side-to-side distance between the outermost two, their standard
+ *          deviation, the phones' average reported GPS accuracy and the segment
+ *          length (all metres).
  */
 export function buildNetwork(tracks, opts = {}) {
   const T = clamp(opts.threshold ?? 8, 1, 100);
@@ -35,6 +39,10 @@ export function buildNetwork(tracks, opts = {}) {
   const nx = [], ny = [];                 // position when first laid down (used for matching)
   const sx = [], sy = [], sz = [], zw = [], w = [];  // one entry per completed pass over the node
   const cx = [], cy = [], cz = [], cn = [], czn = [], cPass = []; // the pass currently going over it
+  const ca = [], can = [];                // ... and its GPS accuracy readings
+  // How the passes sit side by side at each node (for trail width): each pass's
+  // sideways distance from the first pass, plus the GPS accuracy of each pass.
+  const lSum = [], lSq = [], lMin = [], lMax = [], lN = [], aSum = [], aN = [];
   const nChain = [], nIdx = [], nTrack = [], nS = [], nhx = [], nhy = [];
   const dead = [], junc = [], nUsers = [];
   const chains = [];
@@ -45,10 +53,18 @@ export function buildNetwork(tracks, opts = {}) {
   /** Bank the pass in progress on a node as one vote for where the trail is. */
   const flush = (q) => {
     if (cn[q] > 0) {
-      sx[q] += cx[q] / cn[q]; sy[q] += cy[q] / cn[q]; w[q]++;
+      const px = cx[q] / cn[q], py = cy[q] / cn[q];
+      sx[q] += px; sy[q] += py; w[q]++;
       if (czn[q] > 0) { sz[q] += cz[q] / czn[q]; zw[q]++; }
+      // Sideways offset of this pass: its distance from the first pass, measured
+      // across the direction of travel.
+      const l = (py - ny[q]) * nhx[q] - (px - nx[q]) * nhy[q];
+      lSum[q] += l; lSq[q] += l * l; lN[q]++;
+      if (l < lMin[q]) lMin[q] = l;
+      if (l > lMax[q]) lMax[q] = l;
+      if (can[q] > 0) { aSum[q] += ca[q] / can[q]; aN[q]++; }
     }
-    cx[q] = cy[q] = cz[q] = cn[q] = czn[q] = 0;
+    cx[q] = cy[q] = cz[q] = cn[q] = czn[q] = ca[q] = can[q] = 0;
     cPass[q] = -1;
   };
 
@@ -79,7 +95,7 @@ export function buildNetwork(tracks, opts = {}) {
     return best < 0 ? null : { q: best, d: Math.sqrt(bestD2) };
   }
 
-  function walk(X, Y, Z, S, HX, HY, ti) {
+  function walk(X, Y, Z, A, S, HX, HY, ti) {
     const n = X.length;
     let state = 0;          // 0 start, 1 following existing trail, 2 laying new trail
     let chain = null;       // the new trail being laid
@@ -90,10 +106,13 @@ export function buildNetwork(tracks, opts = {}) {
 
     const lay = (i) => {
       const q = nx.length;
-      const hasZ = !Number.isNaN(Z[i]);
+      const hasZ = !Number.isNaN(Z[i]), hasA = !Number.isNaN(A[i]);
       nx.push(X[i]); ny.push(Y[i]);
       sx.push(X[i]); sy.push(Y[i]); sz.push(hasZ ? Z[i] : 0); zw.push(hasZ ? 1 : 0); w.push(1);
       cx.push(0); cy.push(0); cz.push(0); cn.push(0); czn.push(0); cPass.push(-1);
+      ca.push(0); can.push(0);
+      lSum.push(0); lSq.push(0); lMin.push(0); lMax.push(0); lN.push(1); // the first pass is the zero line
+      aSum.push(hasA ? A[i] : 0); aN.push(hasA ? 1 : 0);
       nChain.push(chain.id); nIdx.push(chain.nodes.length);
       nTrack.push(ti); nS.push(S[i]); nhx.push(HX[i]); nhy.push(HY[i]);
       dead.push(0); junc.push(0); nUsers.push([ti]);
@@ -110,6 +129,7 @@ export function buildNetwork(tracks, opts = {}) {
       if (cPass[q] !== pass) { flush(q); cPass[q] = pass; }
       cx[q] += e.x; cy[q] += e.y; cn[q]++;
       if (!Number.isNaN(e.z)) { cz[q] += e.z; czn[q]++; }
+      if (!Number.isNaN(e.a)) { ca[q] += e.a; can[q]++; }
       const users = nUsers[q];
       if (users[users.length - 1] !== ti) users.push(ti);
       run.push(e);
@@ -129,11 +149,12 @@ export function buildNetwork(tracks, opts = {}) {
             foldAt({
               q: node, i: -1, s: S[i], d: Infinity,
               x: last.x + (X[i] - last.x) * t, y: last.y + (Y[i] - last.y) * t, z: last.z + (Z[i] - last.z) * t,
+              a: last.a + (A[i] - last.a) * t,
             });
           }
         }
       }
-      last = { q, i, s: S[i], d, x: X[i], y: Y[i], z: Z[i] };
+      last = { q, i, s: S[i], d, x: X[i], y: Y[i], z: Z[i], a: A[i] };
       foldAt(last);
       while (S[i] - run[0].s > LOOK) run.shift();
     };
@@ -141,6 +162,7 @@ export function buildNetwork(tracks, opts = {}) {
     const unfold = (e) => {
       cx[e.q] -= e.x; cy[e.q] -= e.y; cn[e.q]--;
       if (!Number.isNaN(e.z)) { cz[e.q] -= e.z; czn[e.q]--; }
+      if (!Number.isNaN(e.a)) { ca[e.q] -= e.a; can[e.q]--; }
     };
 
     /** Finish the new trail being laid. q = the existing node it ran into, or -1 at the end of a track. */
@@ -256,6 +278,7 @@ export function buildNetwork(tracks, opts = {}) {
         seg.map((p) => proj.y(p.lat)),
         seg.map((p) => (p.alt == null ? NaN : p.alt)),
         step,
+        seg.map((p) => (p.acc == null ? NaN : p.acc)),
       );
       const n = r.X.length;
       if (n < 2) continue;
@@ -271,7 +294,7 @@ export function buildNetwork(tracks, opts = {}) {
         const len = Math.hypot(dx, dy);
         if (len > 0) { HX[i] = dx / len; HY[i] = dy / len; }
       }
-      walk(r.X, r.Y, r.Z, S, HX, HY, ti);
+      walk(r.X, r.Y, r.Z, r.W, S, HX, HY, ti);
     }
   });
 
@@ -401,10 +424,29 @@ export function buildNetwork(tracks, opts = {}) {
     }
     stats.mergedLength += length;
     stats.mergedPoints += points.length;
+
+    // How far apart the passes ran, side to side, along this segment. Medians,
+    // so the ends (where trails peel apart at junctions) do not skew it.
+    const ranges = [], counts = [];
+    let varSum = 0, accSum = 0, accN = 0;
+    for (const q of e) {
+      if (aN[q]) { accSum += aSum[q] / aN[q]; accN++; }
+      if (lN[q] < 2) continue;
+      ranges.push(lMax[q] - lMin[q]);
+      counts.push(lN[q]);
+      varSum += (lSq[q] - (lSum[q] * lSum[q]) / lN[q]) / (lN[q] - 1);
+    }
+    const median = (a) => a.sort((x, y) => x - y)[a.length >> 1];
+    const acc = accN ? accSum / accN : null;
+    const spread = ranges.length >= e.length / 2
+      ? { passes: median(counts), range: median(ranges), sd: Math.sqrt(Math.max(0, varSum / ranges.length)), acc, length }
+      : { passes: 1, range: 0, sd: 0, acc, length };
+
     return {
       id: 'S' + String(idx + 1).padStart(2, '0'),
       points,
       length,
+      spread, // see width.js
       passes: Math.round(passes / e.length),
       sources: [...users].sort((a, b) => a - b), // indexes into `tracks`
       rides: [...users].sort((a, b) => a - b).map((ti) => tracks[ti].name),

@@ -7,9 +7,10 @@ import { MapView } from './mapview.js';
 import { buildNetwork } from './merge.js';
 import { buildKml, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
 import { prepareReference, nameSegments, coverage } from './reference.js';
+import { estimateWidth, widthLabel, GRIZZLY_WIDTH } from './width.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.2'; // keep in step with version.json (tools/check-release.mjs checks it)
+const VERSION = '1.3'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -32,6 +33,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const DEFAULTS = {
   threshold: 8, smoothing: 3,             // merge
   maxAcc: 15, minDist: 3, autoPause: true, keepAwake: true, // recording
+  vehicleWidth: GRIZZLY_WIDTH,            // metres; the phone is taken to ride on the centre line
   color: 'orange', showRaw: true, showMerged: true, showRef: true,
 };
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; } };
@@ -140,12 +142,27 @@ function ask({ title, body = '', input = null, chips = [], buttons, focus = true
     });
     return b;
   }));
-  $('dlg-btns').replaceChildren(...buttons.map((b) => Object.assign(make(b.label, `big ${b.cls ?? 'ghost'}`, 'submit'), { value: b.value })));
   return new Promise((resolve) => {
-    dlg.returnValue = '';
-    dlg.addEventListener('close', () => {
-      resolve({ button: dlg.returnValue || 'cancel', text: inp.value.trim() });
-    }, { once: true });
+    // Answer the moment a button is tapped. (The dialog's own "close" event only
+    // arrives with the next screen redraw, which is too late if the phone is
+    // locked or the app is put away right after the tap.)
+    const form = dlg.querySelector('form');
+    const answer = (button) => {
+      dlg.oncancel = form.onsubmit = null;
+      if (dlg.open) dlg.close();
+      resolve({ button, text: inp.value.trim() });
+    };
+    $('dlg-btns').replaceChildren(...buttons.map((b) => {
+      const el = Object.assign(make(b.label, `big ${b.cls ?? 'ghost'}`, 'submit'), { value: b.value });
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        answer(b.value);
+      });
+      return el;
+    }));
+    // Enter / Done on the keyboard means the first button; Back or Esc means cancel.
+    form.onsubmit = (e) => { e.preventDefault(); answer(buttons[0].value); };
+    dlg.oncancel = () => answer('cancel');
     dlg.showModal();
     if (input && focus) { inp.focus(); inp.select(); } else dlg.focus();
   });
@@ -566,6 +583,7 @@ function computeNetwork() {
   nameSegments(net.segments, state.refIndex);
   for (const s of net.segments) {
     s.contributors = [...new Set(s.sources.map((i) => tracks[i].by))];
+    s.width = estimateWidth(s.spread, settings.vehicleWidth);
     const what = s.ref ?? (s.rides.length === 1 ? s.rides[0] : (state.refIndex ? 'New trail' : 'Trail'));
     s.name = `${what} · ${s.id}`;
   }
@@ -610,7 +628,7 @@ function renderNetwork(fit) {
   $('seg-details').querySelector('summary').textContent = `Trail segments in the network (${net.segments.length})`;
   $('seg-list').innerHTML = net.segments.map((s) => `
     <li><span class="dot" style="background:${css}"></span>
-      <span>${esc(s.name)} <span class="sub">${s.points.length} points · ridden ×${s.passes} · ${esc(s.contributors.join(', '))}</span></span>
+      <span>${esc(s.name)} <span class="sub">${widthLabel(s.width)} · ridden ×${s.passes} · ${s.points.length} points · ${esc(s.contributors.join(', '))}</span></span>
       <span class="pct">${fmtDist(s.length)}</span></li>`).join('');
 
   const who = contributorsOf(net.tracks, state.pins);
@@ -676,6 +694,8 @@ function renderSettings() {
   $('acc-val').textContent = `${settings.maxAcc} m`;
   $('mind').value = settings.minDist;
   $('mind-val').textContent = `${settings.minDist} m`;
+  $('veh').value = settings.vehicleWidth;
+  $('veh-val').textContent = `${settings.vehicleWidth.toFixed(2)} m (${(settings.vehicleWidth / 0.0254).toFixed(0)} in)`;
   $('autopause').checked = settings.autoPause;
   $('awake').checked = settings.keepAwake;
   $('show-raw').checked = settings.showRaw;
@@ -818,6 +838,7 @@ bindSetting('thr', 'threshold', { after: remergeSoon });
 bindSetting('smo', 'smoothing', { after: remergeSoon });
 bindSetting('acc', 'maxAcc');
 bindSetting('mind', 'minDist');
+bindSetting('veh', 'vehicleWidth', { after: () => { state.network = null; } });
 bindSetting('autopause', 'autoPause', { event: 'change' });
 bindSetting('awake', 'keepAwake', { event: 'change', after: () => setWake(!!state.current && settings.keepAwake) });
 bindSetting('show-raw', 'showRaw', { event: 'change', after: () => renderNetwork(false) });
@@ -949,8 +970,7 @@ function showView(view) {
   if (view === 'settings') renderSettings();
   if (view === 'net') {
     renderSettings();
-    // Wait a frame so the map has its size before fitting to it.
-    requestAnimationFrame(() => renderNetwork(true));
+    renderNetwork(true);
   }
 }
 $('tabs').addEventListener('click', (e) => {

@@ -75,11 +75,12 @@ export function rdp(xs, ys, eps) {
 }
 
 /**
- * Re-space a line so its points sit `step` metres apart. z values (which may
- * be NaN) are interpolated. The last point is always kept.
+ * Re-space a line so its points sit `step` metres apart. The z values and the
+ * optional second set of values ws (either may hold NaN) are interpolated.
+ * The last point is always kept.
  */
-export function resample(xs, ys, zs, step) {
-  const X = [xs[0]], Y = [ys[0]], Z = [zs[0]];
+export function resample(xs, ys, zs, step, ws = null) {
+  const X = [xs[0]], Y = [ys[0]], Z = [zs[0]], W = ws ? [ws[0]] : null;
   let need = step; // distance still to travel before the next sample
   for (let i = 1; i < xs.length; i++) {
     const dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
@@ -91,6 +92,7 @@ export function resample(xs, ys, zs, step) {
       X.push(xs[i - 1] + dx * t);
       Y.push(ys[i - 1] + dy * t);
       Z.push(zs[i - 1] + (zs[i] - zs[i - 1]) * t);
+      if (W) W.push(ws[i - 1] + (ws[i] - ws[i - 1]) * t);
       at += step;
     }
     need = at - len;
@@ -99,8 +101,10 @@ export function resample(xs, ys, zs, step) {
   const tail = Math.hypot(xs[last] - X[m], ys[last] - Y[m]);
   if (tail > step * 0.25 || m === 0) {
     X.push(xs[last]); Y.push(ys[last]); Z.push(zs[last]);
+    if (W) W.push(ws[last]);
   } else {
     X[m] = xs[last]; Y[m] = ys[last]; Z[m] = zs[last];
+    if (W) W[m] = ws[last];
   }
-  return { X, Y, Z };
+  return { X, Y, Z, W };
 }
