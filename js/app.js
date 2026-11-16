@@ -15,10 +15,11 @@ import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.17';
+const VERSION = '1.18';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const SHARE_URL = 'https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
+const REF_VERSION = '2'; // raise whenever reference.kml changes, so phones pick up the corrected map
+const SHARE_URL ='https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
 // iPhone or iPad (an iPad calls itself a Mac with a touch screen). Adding ?ios
@@ -471,15 +472,20 @@ async function loadAll() {
   state.tracks.clear();
   for (const r of state.rides) state.tracks.set(r.id, toSegments(await db.pointsOf(r.id)));
   state.ref = (await db.get('kv', 'reference')) ?? null;
-  if (!state.ref && !localStorage.getItem('tt-ref-removed')) {
-    // A trail map shipped alongside the app is loaded the first time.
+  if (!localStorage.getItem('tt-ref-removed') && (!state.ref || localStorage.getItem('tt-ref-ver') !== REF_VERSION)) {
+    // A trail map shipped alongside the app is loaded the first time, and again when
+    // a corrected one is published. A different map the user loaded themself is left alone.
     try {
-      const res = await fetch('reference.kml');
+      const res = await fetch('reference.kml', { cache: 'no-store' });
       if (res.ok) {
-        state.ref = parseKml(await res.text());
-        await db.put('kv', state.ref, 'reference');
+        const fresh = parseKml(await res.text());
+        if (!state.ref || state.ref.name === fresh.name) {
+          state.ref = fresh;
+          await db.put('kv', state.ref, 'reference');
+        }
+        localStorage.setItem('tt-ref-ver', REF_VERSION);
       }
-    } catch { /* none bundled, or offline on first run */ }
+    } catch { /* none bundled, or offline: try again next time */ }
   }
   state.refIndex = prepareReference(state.ref);
   state.branches = (await db.get('kv', 'branches')) ?? [];
