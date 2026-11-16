@@ -6,6 +6,7 @@
 .wrangler
 .dev.vars
 node_modules
+android-app
 worker
 tools
 package.json

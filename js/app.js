@@ -14,12 +14,13 @@ import { natureHunt, placesHunt, photoItem, placesReached, hintFor, foundCount, 
 import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
+import { NATIVE, nativeGeo, nativeSave, installShare, openAppSettings } from './native.js';
 import {
   CHALLENGE_KINDS, countsFor, newChallengeId, dayOf, addDays, lastDayOf, inChallenge, isOver, dayLabel, totalsByDay, standings, winnerOf,
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.21';
+const VERSION = '1.22';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '3'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -30,7 +31,8 @@ const DEMO = PARAMS.has('demo');
 // to the address forces the iPhone behaviour, for trying it on a computer.
 const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) || PARAMS.has('ios');
-const INSTALLED = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+const INSTALLED = NATIVE || navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+installShare(); // inside the Android app, "share" buttons use the phone's share sheet (see native.js)
 const SCREEN_TIP = IOS
   ? 'This iPhone would not let the app keep the screen on. While riding, set Settings > Display & Brightness > Auto-Lock to Never.'
   : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.';
@@ -423,6 +425,10 @@ function ask({ title, body = '', input = null, chips = [], buttons, focus = true
 }
 
 function download(name, text, type) {
+  if (NATIVE) { // a page inside an app cannot download: hand the file to the share sheet instead
+    nativeSave(name, text).catch(() => toast('That file could not be saved. Try again.', 5000));
+    return;
+  }
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = Object.assign(document.createElement('a'), { href: url, download: name });
   document.body.append(a);
@@ -599,6 +605,7 @@ async function setWake(on) {
 
 function startGps() {
   state.gpsWanted = true;
+  if (NATIVE) localStorage.setItem('tt-native-gps', '1'); // asked for once: next time GPS comes on by itself
   tracker.watch();
   updateStatus();
 }
@@ -697,6 +704,13 @@ async function startRide() {
   rideMap.center();
   notice('');
   setWake(true).then((ok) => {
+    if (NATIVE) { // the Android app records with the screen off, so none of the screen advice applies
+      if (!localStorage.getItem('tt-native-tip')) {
+        localStorage.setItem('tt-native-tip', '1');
+        notice('You can turn the screen off or put the phone in your pocket. Recording carries on, and a notification shows while it does.');
+      }
+      return;
+    }
     if (!ok) { notice(SCREEN_TIP); return; }
     // For the first few rides, say how to pocket the phone without losing GPS.
     const shown = Number(localStorage.getItem('tt-dark-tip') ?? 0);
@@ -3110,7 +3124,7 @@ $('btn-dark').addEventListener('click', enterDark);
 
 // Go dark by itself after a while without a touch, the way a screen normally times out.
 setInterval(() => {
-  if (!tracker || !state.current || !settings.autoDark || state.view !== 'ride') return;
+  if (!tracker || !state.current || !settings.autoDark || state.view !== 'ride' || NATIVE) return; // the Android app has the real screen-off instead
   if (Date.now() - lastTouch > settings.autoDark * 1000) enterDark();
 }, 2000);
 $('btn-pin').addEventListener('click', dropPin);
@@ -3130,7 +3144,10 @@ $('btn-pause').addEventListener('click', () => {
   }
   db.put('rides', ride);
 });
-$('status').addEventListener('click', () => { if (!state.gpsWanted) startGps(); });
+$('status').addEventListener('click', () => {
+  if (NATIVE && tracker.error === 'denied') { openAppSettings().catch(() => {}); return; } // location was refused: the phone's settings are the only way back
+  if (!state.gpsWanted) startGps();
+});
 
 $('ride-in').addEventListener('click', () => rideMap.zoom(1.5));
 $('ride-out').addEventListener('click', () => rideMap.zoom(1 / 1.5));
@@ -3159,7 +3176,7 @@ document.addEventListener('visibilitychange', () => {
   if (state.current) {
     setWake(true);
     const away = Date.now() - state.hiddenAt;
-    if (away > 15000 && tracker.state === 'recording') {
+    if (away > 15000 && tracker.state === 'recording' && !NATIVE) {
       notice(`GPS was not recorded for ${fmtDur(away)} while the screen was off or another app was in front. Next time use DARK SCREEN instead of the power button.`);
     }
   } else if (Date.now() - update.checkedAt > 10 * 60000) {
@@ -3178,7 +3195,11 @@ async function boot() {
   await loadAll();
   if (OLD_HOME && !DEMO && await leaveOldHome()) return; // the app's new address is opening instead
 
-  let geo = navigator.geolocation;
+  let geo = NATIVE ? nativeGeo() : navigator.geolocation; // the Android app's GPS keeps coming with the screen off
+  if (NATIVE) {
+    document.querySelector('.tips li').textContent = 'In this Android app, GPS keeps recording with the screen off or another app in front. A notification stays up while it does.';
+    $('awake').closest('label').querySelector('small').textContent = 'Not needed in this Android app: it records with the screen off.';
+  }
   if (DEMO) {
     geo = (await import('./demo.js')).createDemoGeo(state.ref);
     $('demo-flag').hidden = false;
@@ -3195,7 +3216,7 @@ async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Turn GPS on straight away if this site already has permission; otherwise wait for a tap.
-  let granted = DEMO;
+  let granted = DEMO || (NATIVE && !!localStorage.getItem('tt-native-gps'));
   try { granted ||= (await navigator.permissions.query({ name: 'geolocation' })).state === 'granted'; } catch { /* not supported */ }
   if (granted) startGps();
 
