@@ -15,7 +15,7 @@ import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.18';
+const VERSION = '1.19';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '2'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -2279,10 +2279,13 @@ async function runSync(manual = false) {
       if (state.view === 'net') renderNetwork(false);
       if (state.view === 'settings') renderSettings();
     }
-    if (manual) toast(res.got || res.sent ? `Synced: ${res.sent} sent, ${res.got} received.` : 'Everything is already in step.');
+    if (manual) {
+      toast((res.got || res.sent ? `Synced: ${res.sent} sent, ${res.got} received.` : 'Everything is already in step.')
+        + (res.skipped ? ` ${res.skipped} photo${res.skipped === 1 ? '' : 's'} could not be sent yet.` : ''));
+    }
   } catch (err) {
     cloud.error = navigator.onLine ? (err.message || 'no answer') : 'no signal';
-    if (manual) toast('Could not reach the cloud. It will try again when there is a signal.', 5000);
+    if (manual) toast(navigator.onLine ? `The sync did not get through (${cloud.error}). It will try again by itself.` : 'No signal. It will sync when there is one.', 5000);
   } finally {
     cloud.busy = false;
     renderCloud();

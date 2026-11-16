@@ -41,7 +41,7 @@ export async function syncNow(code, shared) {
     return res;
   };
   const state = { cursor: 0, points: {}, photos: {}, kvAt: {}, ...((await db.get('kv', 'sync')) ?? {}) };
-  let changed = false, sent = 0, got = 0;
+  let changed = false, sent = 0, got = 0, skipped = 0;
 
   // ---- what has changed here ----
   const byId = async (store) => new Map((await db.all(store)).map((v) => [String(v.id), v]));
@@ -127,7 +127,11 @@ export async function syncNow(code, shared) {
     if (state.photos[id] || !pin.photo) continue;
     const mine = await db.get('photos', pin.id);
     if (mine) {
-      await call(`photo/${id}`, { method: 'PUT', body: mine.data, headers: { 'Content-Type': mine.type || 'image/jpeg' } });
+      // One picture that will not go must not hold up everything else: it is tried again next time.
+      try {
+        const fit = await fitPhoto(mine);
+        await call(`photo/${id}`, { method: 'PUT', body: fit.data, headers: { 'Content-Type': fit.type || 'image/jpeg' } });
+      } catch { skipped++; continue; }
     } else {
       const res = await call(`photo/${id}`);
       if (res.status === 404) continue;
@@ -136,5 +140,37 @@ export async function syncNow(code, shared) {
     state.photos[id] = 1;
     await db.put('kv', state, 'sync');
   }
-  return { changed, sent, got };
+  return { changed, sent, got, skipped };
+}
+
+/** The cloud takes pictures up to about 1.9 MB; some phones' cameras make bigger ones. */
+const PHOTO_ROOM = 1500000;
+
+/**
+ * A copy of a picture small enough for the cloud. The full picture stays on this device.
+ * @param photo { type, data: ArrayBuffer }
+ */
+export async function fitPhoto(photo) {
+  if (photo.data.byteLength <= PHOTO_ROOM) return photo;
+  const url = URL.createObjectURL(new Blob([photo.data], { type: photo.type || 'image/jpeg' }));
+  try {
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error('not a picture'));
+      img.src = url;
+    });
+    for (const [side, quality] of [[2048, 0.7], [1600, 0.75], [1280, 0.75], [1024, 0.7]]) {
+      const k = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * k));
+      c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const blob = await new Promise((resolve) => c.toBlob(resolve, 'image/jpeg', quality));
+      if (blob && blob.size <= PHOTO_ROOM) return { type: 'image/jpeg', data: await blob.arrayBuffer() };
+    }
+    throw new Error('picture too large');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
