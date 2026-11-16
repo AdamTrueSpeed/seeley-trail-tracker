@@ -250,5 +250,48 @@ function walk({ seconds, stepsPerSecond, swing, noise = 0.25, hz = 60, seed = 3 
   check('send: the wrong code reaches nobody', nobody.sent instanceof Error && nobody.sent.message === 'nobody', String(nobody.sent?.message));
 }
 
+// ---- challenges -----------------------------------------------------------------------------------
+{
+  const { countsFor, dayOf, addDays, lastDayOf, inChallenge, isOver, totalsByDay, standings, winnerOf, dailyWinners, challengeLink, readChallengeLink, newChallengeId }
+    = await import('../js/challenge.js');
+  const at = (day, hour = 10) => { const [y, m, d] = day.split('-').map(Number); return new Date(y, m - 1, d, hour).getTime(); };
+  const foot = { kind: 'foot' }, quad = { kind: 'motor' }, bike = { kind: 'bike' };
+  check('challenge: a day is the phone\'s own calendar day', dayOf(at('2026-11-16', 23)) === '2026-11-16' && dayOf(at('2026-11-16', 0)) === '2026-11-16');
+  check('challenge: days roll over months and years', addDays('2026-11-30', 1) === '2026-12-01' && addDays('2027-01-01', -1) === '2026-12-31');
+  const week = { kind: 'foot', start: '2026-11-16', days: 7, teams: [] }, open = { kind: 'any', start: '2026-11-16', days: 0, teams: [] };
+  check('challenge: a 7-day challenge ends on its 7th day', lastDayOf(week) === '2026-11-22' && inChallenge(week, '2026-11-22') && !inChallenge(week, '2026-11-23') && !inChallenge(week, '2026-11-15'));
+  check('challenge: over the day after, never over with no end date', !isOver(week, '2026-11-22') && isOver(week, '2026-11-23') && !isOver(open, '2030-01-01'));
+  check('challenge: on foot counts walks only, riding counts everything else', countsFor('foot', foot) && !countsFor('foot', quad) && countsFor('wheels', quad) && countsFor('wheels', bike) && !countsFor('wheels', foot) && countsFor('any', foot) && countsFor('any', quad));
+  const mine = [
+    { t: at('2026-11-16', 8), dist: 1200, ms: 900000, method: foot }, { t: at('2026-11-16', 17), dist: 800, ms: 600000, method: foot },
+    { t: at('2026-11-16', 12), dist: 9000, ms: 1200000, method: quad }, { t: at('2026-11-17'), dist: 500, ms: 300000, method: foot },
+    { t: at('2026-11-15'), dist: 7000, ms: 1, method: foot }, { t: at('2026-11-23'), dist: 7000, ms: 1, method: foot },
+  ];
+  const tot = totalsByDay(week, mine);
+  check('challenge: two walks in a day add up, the ride and the days outside do not count', tot['2026-11-16'].dist === 2000 && tot['2026-11-16'].ms === 1500000 && tot['2026-11-17'].dist === 500 && Object.keys(tot).length === 2, JSON.stringify(tot));
+  check('challenge: an anything challenge counts the ride too', totalsByDay(open, mine)['2026-11-16'].dist === 11000);
+  const s = (player, name, team, day, dist) => ({ player, name, team, day, dist, ms: 0 });
+  const solo = [s('a', 'Adam', '', '2026-11-16', 3000), s('c', 'Christianne', '', '2026-11-16', 4200), s('a', 'Adam', '', '2026-11-17', 5000), s('c', 'Christianne', '', '2026-11-17', 1000), s('b', 'Bob', '', '2026-11-16', 0)];
+  const mon = standings(week, solo, '2026-11-16');
+  check('challenge: the day\'s board is furthest first', mon.people.map((p) => p.name).join() === 'Christianne,Adam,Bob' && mon.people[0].dist === 4200);
+  check('challenge: the whole challenge adds the days up', standings(week, solo).people[0].name === 'Adam' && standings(week, solo).people[0].dist === 8000);
+  check('challenge: each day has its own winner', winnerOf(week, solo, '2026-11-16').name === 'Christianne' && winnerOf(week, solo, '2026-11-17').name === 'Adam');
+  check('challenge: nobody wins a day nobody went out', winnerOf(week, solo, '2026-11-18') === null && winnerOf(week, [s('b', 'Bob', '', '2026-11-18', 0)], '2026-11-18') === null);
+  const tied = winnerOf(week, [s('a', 'Adam', '', '2026-11-16', 3000), s('c', 'Christianne', '', '2026-11-16', 3000)], '2026-11-16');
+  check('challenge: a tie names both', tied.tie && tied.name === 'Adam and Christianne');
+  const sides = { ...week, teams: ['Red', 'Blue'] };
+  const team = [s('a', 'Adam', 'Red', '2026-11-16', 5000), s('c', 'Christianne', 'Blue', '2026-11-16', 3000), s('d', 'Dale', 'Blue', '2026-11-16', 2500)];
+  const tb = standings(sides, team, '2026-11-16');
+  check('challenge: a team\'s distances are added together', tb.teams[0].team === 'Blue' && tb.teams[0].dist === 5500 && tb.teams[0].players === 2 && tb.teams[1].dist === 5000);
+  check('challenge: in a team challenge the team wins the day, not the furthest person', winnerOf(sides, team, '2026-11-16').name === 'Blue');
+  const past = dailyWinners(week, solo, '2026-11-18');
+  check('challenge: finished days are listed newest first, today left out', past.length === 2 && past[0].day === '2026-11-17' && past[0].name === 'Adam' && past[1].name === 'Christianne' && dailyWinners(week, solo, '2026-11-16').length === 0);
+  const id = newChallengeId(), link = challengeLink('https://example.test/', id, { by: 'Adam M', dist: 3204.6, noun: 'walk' });
+  const read = readChallengeLink(link);
+  check('challenge: a link carries the id and the dare', read.id === id && read.dare.by === 'Adam M' && read.dare.dist === 3205 && read.dare.noun === 'walk', link);
+  check('challenge: a bare id works, with no dare', readChallengeLink(id.toLowerCase())?.id === id && readChallengeLink(id).dare === null);
+  check('challenge: other links are not challenges', readChallengeLink('https://example.test/#hunt=abc') === null && readChallengeLink('') === null);
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

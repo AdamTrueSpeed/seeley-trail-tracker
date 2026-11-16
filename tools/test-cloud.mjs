@@ -48,5 +48,35 @@ const after = await sync(family, 0);
 check('cloud: a deleted ride is passed on as deleted', after.items.find((i) => i.kind === 'ride' && i.id === '1')?.deleted === true);
 check('cloud: its points and the deleted pin\'s photo are gone', (await call(family, 'points/1')).status === 404 && (await call(family, 'photo/9')).status === 404);
 
+// ---- challenges: no family code, whoever holds the id is in ----------------------------------------
+{
+  const { newChallengeId, standings, winnerOf } = await import('../js/challenge.js');
+  const api = (path, method, body) => fetch(`${base}/api/${path}`, { method: method ?? 'GET', body: body ? JSON.stringify(body) : undefined });
+  const id = newChallengeId(), day = '2026-11-16';
+  const ch = { name: 'Test walk-off', kind: 'foot', start: day, days: 7, teams: ['Red', 'Blue'], by: 'Adam' };
+  check('challenge: one that was never made is not found', (await api(`challenge/${id}`)).status === 404);
+  check('challenge: a score for one that was never made is refused', (await api(`challenge/${id}/score`, 'PUT', { player: 'phone-aaaa', name: 'Adam', team: 'Red', days: [{ day, dist: 10, ms: 0 }] })).status === 404);
+  check('challenge: it is made', (await api(`challenge/${id}`, 'PUT', ch)).ok);
+  await api(`challenge/${id}`, 'PUT', { ...ch, name: 'Hijacked', teams: [] });
+  check('challenge: making it again changes nothing', (await (await api(`challenge/${id}`)).json()).challenge.name === 'Test walk-off');
+  check('challenge: a nonsense challenge is refused', (await api(`challenge/${newChallengeId()}`, 'PUT', { name: '', kind: 'foot', start: day })).status === 400);
+  await api(`challenge/${id}/score`, 'PUT', { player: 'phone-aaaa', name: 'Adam', team: 'Red', days: [{ day, dist: 3000, ms: 60000 }] });
+  await api(`challenge/${id}/score`, 'PUT', { player: 'phone-cccc', name: 'Christianne', team: 'Blue', days: [{ day, dist: 4200, ms: 90000 }] });
+  await api(`challenge/${id}/score`, 'PUT', { player: 'phone-dddd', name: 'Dale', team: 'Green', days: [{ day, dist: 100, ms: 0 }, { day: 'yesterday', dist: 9e9 }] });
+  await api(`challenge/${id}/score`, 'PUT', { player: 'phone-aaaa', name: 'Adam', team: 'Red', days: [{ day, dist: 5000, ms: 120000 }] });
+  const got = await (await api(`challenge/${id}`)).json();
+  const board = standings(got.challenge, got.scores, day);
+  check('challenge: three people on the board, a later total replaces the earlier one', board.people.length === 3 && board.people[0].name === 'Adam' && board.people[0].dist === 5000, JSON.stringify(board.people.map((p) => [p.name, p.dist])));
+  check('challenge: a team that does not exist is dropped, a nonsense day ignored', got.scores.find((s) => s.name === 'Dale').team === '' && got.scores.length === 3);
+  check('challenge: the day goes to the team that went furthest', winnerOf(got.challenge, got.scores, day).name === 'Red');
+  const inbox = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`test inbox ${id}`)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  check('challenge: an empty inbox is empty', (await (await api(`invites/${inbox}`)).json()).invites.length === 0);
+  check('challenge: an invitation is left for a friend', (await api('invite', 'POST', { to: [inbox], challenge: id, from: 'Adam', title: 'Adam did a 3 km walk today. Can you beat that?' })).ok);
+  await api('invite', 'POST', { to: [inbox], challenge: id, from: 'Adam', title: 'Sent twice' });
+  const inv = (await (await api(`invites/${inbox}`)).json()).invites;
+  check('challenge: the friend finds it, once', inv.length === 1 && inv[0].challenge === id && inv[0].from === 'Adam');
+  check('challenge: a bad invitation is refused', (await api('invite', 'POST', { to: ['nobody'], challenge: id })).status === 400);
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);

@@ -14,8 +14,12 @@ import { natureHunt, placesHunt, photoItem, placesReached, hintFor, foundCount, 
 import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
+import {
+  CHALLENGE_KINDS, countsFor, newChallengeId, dayOf, addDays, lastDayOf, inChallenge, isOver, dayLabel, totalsByDay, standings, winnerOf,
+  dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
+} from './challenge.js';
 
-const VERSION = '1.19';
+const VERSION = '1.20';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '3'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -308,7 +312,15 @@ function reportLines(ride) {
   ].filter(Boolean);
 }
 
-const showReport = (ride) => ask({ title: ride.name, body: reportLines(ride).join('\n'), buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }] });
+/** @param dare offer to challenge friends to beat it (for an outing just finished) */
+async function showReport(ride, dare = false) {
+  const res = await ask({
+    title: ride.name,
+    body: reportLines(ride).join('\n'),
+    buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }, ...(dare ? [{ label: 'CHALLENGE FRIENDS TO BEAT IT', value: 'dare', cls: 'info' }] : [])],
+  });
+  if (res.button === 'dare') await quickDare(ride);
+}
 
 /**
  * Quick labels: the names typed most recently on this phone first, then the
@@ -804,7 +816,10 @@ async function finishRide() {
   notice('');
   updateRideUi();
   syncSoon();
-  if (ride.status === 'done') await showReport(ride);
+  if (ride.status === 'done') {
+    refreshChallenges(true); // today's distance goes on the board of any challenge under way
+    await showReport(ride, true);
+  }
 }
 
 /** Say what the trail is like from here on. It is stored with every point until it is changed. */
@@ -1994,7 +2009,7 @@ async function shareMessage(message, copied) {
   }
 }
 
-const HOW_TO_JOIN = 'Open this link to play. (If it opens outside the app, copy the link and use Hunt > Join a hunt in the app.)';
+const HOW_TO_JOIN = 'Open this link to play. (If it opens outside the app, copy the link and use Play > Join a hunt in the app.)';
 const sendHunt = () => shareMessage({
   title: game.hunt.name,
   text: `Join my scavenger hunt "${game.hunt.name}" on Seeley Trail Tracker: ${game.hunt.items.length} things to find. ${HOW_TO_JOIN}`,
@@ -2148,6 +2163,334 @@ $('hunt-body').addEventListener('click', async (e) => {
   }
 });
 $('hunt-pill').addEventListener('click', () => showView('hunt'));
+
+// ---- challenges ----------------------------------------------------------------------------
+//
+// "I did a 3 km walk today. Can you beat me?" A challenge is a shared scoreboard
+// in the cloud (rules and cloud calls: challenge.js). This phone posts how far
+// its owner went each day, worked out from the saved outings; nothing else leaves it.
+// Each entry here: { ch: the challenge, team, scores: the board as last fetched, at, sent, announced }.
+
+let chal = readJson('tt-challenges');
+if (!Array.isArray(chal.list)) chal = { list: [], seen: [] };
+chal.seen ??= [];
+const saveChal = () => localStorage.setItem('tt-challenges', JSON.stringify(chal));
+const today = () => dayOf(Date.now());
+const myName = () => settings.userName || 'Someone';
+const outings = () => doneRides().map((r) => ({ t: r.startedAt ?? r.id, dist: r.dist ?? 0, ms: movingOf(r) || timeOf(r), method: methodOf(r), noun: nounOf(r) }));
+const lengthText = (ch) => (ch.days === 1 ? `${dayLabel(ch.start)} only` : ch.days ? `${dayLabel(ch.start)} to ${dayLabel(lastDayOf(ch))}` : `from ${dayLabel(ch.start)}, no end date`);
+const NEEDS_SIGNAL = 'That needs a signal. Try again when you have one.';
+
+/** What this phone's owner did today that counts: { by, dist, noun }, or null if nothing yet. */
+function myDare(ch) {
+  const mine = outings().filter((o) => dayOf(o.t) === today() && countsFor(ch.kind, o.method));
+  const dist = mine.reduce((sum, o) => sum + o.dist, 0);
+  if (!(dist > 0)) return null;
+  const nouns = [...new Set(mine.map((o) => o.noun))];
+  return { by: myName(), dist, noun: nouns.length === 1 ? nouns[0] : ch.kind === 'wheels' ? 'ride' : 'outing' };
+}
+const dareText = (dare) => `${fmtDist(dare.dist)} ${dare.noun}`;
+
+/** Post this phone's daily totals to one challenge and fetch the board. Throws with no signal. */
+async function refreshChallenge(entry) {
+  const { ch } = entry, t = today();
+  if (isOver(ch, addDays(t, -7))) return; // long finished: the board no longer changes
+  const totals = totalsByDay(ch, outings());
+  if (inChallenge(ch, t)) totals[t] ??= { dist: 0, ms: 0 }; // on the board from the moment of joining
+  const days = Object.entries(totals).filter(([day]) => day >= addDays(t, -6))
+    .map(([day, v]) => ({ day, dist: Math.round(v.dist), ms: Math.round(v.ms) }));
+  const key = JSON.stringify([myName(), entry.team, days]);
+  if (days.length && key !== entry.sent) {
+    await postScores(ch.id, settings.deviceId, myName(), entry.team, days);
+    entry.sent = key;
+  }
+  const got = await fetchChallenge(ch.id);
+  if (got) { entry.scores = got.scores; entry.at = Date.now(); }
+  saveChal();
+}
+
+let chalBusy = false, chalAt = 0;
+/** Bring every challenge up to date, then say who won yesterday (once). Quietly does nothing with no signal. */
+async function refreshChallenges(force = false) {
+  if (chalBusy || !chal.list.length || !navigator.onLine || (!force && Date.now() - chalAt < 60000)) return;
+  chalBusy = true;
+  chalAt = Date.now();
+  try {
+    for (const entry of chal.list) await refreshChallenge(entry).catch(() => {});
+  } finally {
+    chalBusy = false;
+  }
+  renderChallenges();
+  const yesterday = addDays(today(), -1), news = [];
+  for (const entry of chal.list) {
+    if (!entry.at || entry.announced === yesterday || !inChallenge(entry.ch, yesterday)) continue;
+    entry.announced = yesterday;
+    const w = winnerOf(entry.ch, entry.scores ?? [], yesterday);
+    if (w) news.push(`Yesterday's winner in "${entry.ch.name}": ${w.name}, ${fmtDist(w.dist)}${w.tie ? ' each' : ''}.`);
+  }
+  saveChal();
+  if (news.length && !$('dlg').open) toast(news.join(' '), 9000);
+}
+
+function challengeCard(entry, t) {
+  const { ch } = entry, scores = entry.scores ?? [], over = isOver(ch, t);
+  const day = over ? null : t; // a finished challenge shows its final totals
+  const board = standings(ch, scores, day);
+  const row = (name, sub, dist, mine, i, you = '(you)') => `
+    <li><span class="dot" style="background:${mine ? 'var(--go)' : '#555'}"></span>
+      <span>${i + 1}. ${esc(name)}${mine ? ` <b>${you}</b>` : ''}${sub ? ` <span class="sub">${esc(sub)}</span>` : ''}</span>
+      <span class="pct">${fmtDist(dist)}</span></li>`;
+  // One plain sentence on where this phone's owner stands today.
+  const rows = ch.teams?.length ? board.teams.map((x) => ({ me: x.team === entry.team, name: x.team, dist: x.dist })) : board.people.map((p) => ({ me: p.player === settings.deviceId, name: p.name, dist: p.dist }));
+  const me = rows.find((x) => x.me), top = rows[0], next = rows.find((x) => !x.me);
+  const us = ch.teams?.length ? 'Your team is' : 'You are';
+  const standing = over || !me ? ''
+    : !(me.dist > 0) ? `Nothing counted for you yet today. Press <b>START</b> on the Record screen, then <b>FINISH</b> when you are back: it is added here by itself.`
+      : rows.length < 2 || !(next?.dist > 0) ? `You have ${fmtDist(me.dist)} today. Nobody else has gone out yet.`
+        : top.me ? `${us} in the lead today, ${fmtDist(me.dist - next.dist)} ahead of ${esc(next.name)}.`
+          : `${esc(top.name)} is ${fmtDist(top.dist - me.dist)} ahead of ${ch.teams?.length ? 'your team' : 'you'} today.`;
+  const teams = ch.teams?.length
+    ? `<ul class="coverage card">${board.teams.map((x, i) => row(x.team, `${x.players} ${x.players === 1 ? 'person' : 'people'}`, x.dist, x.team === entry.team, i, '(your team)')).join('')}</ul>` : '';
+  const people = board.people.length
+    ? `<ul class="coverage card">${board.people.map((p, i) => row(p.name, p.team, p.dist, p.player === settings.deviceId, i)).join('')}</ul>`
+    : '<p class="hint">Nobody is on the board yet.</p>';
+  const overall = !over && ch.days !== 1 ? standings(ch, scores).people.slice(0, 3).map((p) => `${esc(p.name)} ${fmtDist(p.dist)}`).join(' · ') : '';
+  const won = dailyWinners(ch, scores, t, 1)[0];
+  const final = over ? (ch.teams?.length ? board.teams[0] && { name: board.teams[0].team, dist: board.teams[0].dist } : board.people[0]) : null;
+  return `
+    <div class="chal" data-id="${ch.id}">
+      <div class="hunt-head"><b>${esc(ch.name)}</b>
+        <small>${CHALLENGE_KINDS[ch.kind].label} · ${lengthText(ch)}${ch.by && ch.by !== myName() ? ` · from ${esc(ch.by)}` : ''}${entry.team ? ` · you are on ${esc(entry.team)}` : ''}</small></div>
+      ${over ? `<p class="hint"><b>Finished.</b> ${final?.dist > 0 ? `${esc(final.name)} won with ${fmtDist(final.dist)}.` : 'Nobody went anywhere.'} Final totals:</p>` : `<p class="chal-now">${standing}</p><p class="hint"><b>Today so far</b></p>`}
+      ${teams}${people}
+      ${overall ? `<p class="hint">Whole challenge so far: ${overall}</p>` : ''}
+      ${won && !over ? `<p class="hint">${dayLabel(won.day)}: <b>${esc(won.name)}</b> won with ${fmtDist(won.dist)}${won.tie ? ' each' : ''}.</p>` : ''}
+      <div class="btnrow">
+        ${over ? '' : '<button class="mid" data-act="invite">Invite more people</button>'}
+        <button class="mid ghost" data-act="days">Past winners</button>
+        <button class="mid ghost" data-act="leave">${over ? 'Remove' : 'Leave challenge'}</button>
+      </div>
+    </div>`;
+}
+
+function renderChallenges() {
+  if (state.view !== 'hunt') return;
+  const t = today();
+  $('chal-body').innerHTML = `
+    ${chal.list.map((entry) => challengeCard(entry, t)).join('')}
+    ${chal.list.length ? '' : `<p class="hint">See who can go furthest: you, your friends or your family.</p>
+      <ol class="steps">
+        <li>Tap <b>START A CHALLENGE</b> and send it to people.</li>
+        <li>Everyone records their walks and rides as usual. The app adds up how far each person goes.</li>
+        <li>A winner is named every day.</li>
+      </ol>
+      <p class="hint">Only names and distances are shared. Nobody sees where you are.</p>`}
+    <div class="hunt-btns">
+      <button class="big go" data-act="new">${chal.list.length ? 'START ANOTHER CHALLENGE' : 'START A CHALLENGE'}</button>
+      <button class="big ghost" data-act="join">I WAS SENT A CHALLENGE LINK</button>
+    </div>
+    <p class="hint">Sent a challenge? Just tap the link in the message. Use the second button only if the link did not open the app.</p>`;
+}
+
+/** Make a challenge. With `quick` ({ name, kind, days }) nothing is asked. Returns its entry, or null. */
+async function newChallenge(quick = null) {
+  let { name, kind, days } = quick ?? {};
+  let teams = [], team = '';
+  if (!quick) {
+    // Two ready-made challenges cover most people; the questions below are only for "set it up myself".
+    const easy = await ask({
+      title: 'Start a challenge',
+      body: 'Pick one. You can invite people as soon as it is made.',
+      buttons: [
+        { label: 'WHO GOES FURTHEST TODAY', value: 'today', cls: 'go' },
+        { label: 'WHO GOES FURTHEST THIS WEEK', value: 'week', cls: 'info' },
+        { label: 'Set it up myself (teams, length…)', value: 'custom' },
+        { label: 'Cancel', value: 'cancel' },
+      ],
+    });
+    if (easy.button === 'cancel') return null;
+    if (easy.button === 'today') quick = { name: `${myName()}'s challenge for today`, kind: 'any', days: 1 };
+    if (easy.button === 'week') quick = { name: `${myName()}'s 7-day challenge`, kind: 'any', days: 7 };
+    if (quick) ({ name, kind, days } = quick);
+  }
+  if (!quick) {
+    const named = await ask({
+      title: 'New challenge',
+      body: 'Give it a name your friends will recognise.',
+      input: { value: `${myName()}'s challenge`, placeholder: 'e.g. November walking challenge' },
+      buttons: [{ label: 'NEXT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (named.button !== 'save') return null;
+    name = named.text || `${myName()}'s challenge`;
+    const what = await ask({
+      title: 'What counts?',
+      body: 'Each person\'s distance for the day is added up from the outings they save.',
+      buttons: [...Object.entries(CHALLENGE_KINDS).map(([key, k], i) => ({ label: k.label, value: key, cls: i ? 'ghost' : 'go' })), { label: 'Cancel', value: 'cancel' }],
+    });
+    if (what.button === 'cancel') return null;
+    kind = what.button;
+    const long = await ask({
+      title: 'How long does it run?',
+      body: 'It starts today. A winner is named for every day.',
+      buttons: [{ label: 'Today only', value: '1', cls: 'go' }, { label: '7 days', value: '7' }, { label: '30 days', value: '30' }, { label: 'No end date', value: '0' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (long.button === 'cancel') return null;
+    days = Number(long.button);
+    const sides = await ask({
+      title: 'Teams?',
+      body: 'With teams, each team\'s distances are added together and the team that goes furthest wins the day.',
+      buttons: [{ label: 'Everyone for themselves', value: 'solo', cls: 'go' }, { label: 'Set up teams', value: 'teams' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (sides.button === 'cancel') return null;
+    if (sides.button === 'teams') {
+      const res = await ask({
+        title: 'Team names',
+        body: 'Type the team names with commas between them. Two to six teams.',
+        input: { value: 'Red, Blue', placeholder: 'e.g. Red, Blue' },
+        buttons: [{ label: 'NEXT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+      });
+      if (res.button !== 'save') return null;
+      teams = [...new Set(res.text.split(',').map((s) => s.trim().slice(0, 24)).filter(Boolean))].slice(0, 6);
+      if (teams.length < 2) { toast('A team challenge needs at least two team names.', 5000); return null; }
+      const mine = await ask({ title: 'Which team are you on?', buttons: [...teams.map((x, i) => ({ label: x, value: x, cls: i ? 'ghost' : 'go' })), { label: 'Cancel', value: 'cancel' }] });
+      if (mine.button === 'cancel') return null;
+      team = mine.button;
+    }
+  }
+  const entry = { ch: { id: newChallengeId(), name: name.slice(0, 60), kind, start: today(), days, teams, by: myName() }, team, scores: [] };
+  try { await createChallenge(entry.ch); } catch { toast(NEEDS_SIGNAL, 5000); return null; }
+  chal.list.unshift(entry);
+  saveChal();
+  await refreshChallenge(entry).catch(() => {});
+  renderChallenges();
+  return entry;
+}
+
+/** Straight from a finished outing: "beat my 3 km walk", today only. */
+async function quickDare(ride) {
+  const kind = methodOf(ride).kind === 'foot' ? 'foot' : 'wheels';
+  const entry = await newChallenge({ name: `Beat ${myName()}'s ${nounOf(ride)} today`, kind, days: 1 });
+  if (entry) await inviteTo(entry);
+}
+
+/** Send a challenge out: to friends inside the app, or as a link by any other means. */
+async function inviteTo(entry) {
+  const { ch } = entry, dare = myDare(ch), friends = settings.friends;
+  const pitch = dare ? `I did a ${dareText(dare)} today on Seeley Trail Tracker. Can you beat me?` : `Join my challenge "${ch.name}" on Seeley Trail Tracker. Can you beat me?`;
+  const res = await ask({
+    title: 'Send this challenge',
+    body: `Your message will say:\n"${pitch}"\n\n${friends.length ? 'Friends on your list see it the next time they open the app. For anyone else, send it by text or email.' : 'Send it the way you send any message.'} When they tap the link they are in. If they do not have the app yet, the link gets it for them first.`,
+    buttons: [
+      ...(friends.length ? [{ label: `SEND TO MY ${friends.length === 1 ? 'FRIEND' : `${friends.length} FRIENDS`} IN THE APP`, value: 'app', cls: 'go' }] : []),
+      { label: 'SEND BY TEXT OR EMAIL', value: 'link', cls: friends.length ? 'info' : 'go' },
+      { label: 'Not now', value: 'cancel' },
+    ],
+  });
+  if (res.button === 'app') {
+    try {
+      const title = dare ? `${dare.by} did a ${dareText(dare)} today. Can you beat that?` : `${myName()} invites you to "${ch.name}".`;
+      await sendInvites(friends.map((f) => f.code), ch.id, myName(), title);
+      toast(`Sent to ${friends.length === 1 ? 'your friend' : `${friends.length} friends`}. They see it when they next open the app.`, 6000);
+    } catch { toast(NEEDS_SIGNAL, 5000); }
+  } else if (res.button === 'link') {
+    await shareMessage({ title: ch.name, text: `${pitch} Open this link to join in:`, url: challengeLink(SHARE_URL, ch.id, dare) }, 'Copied. Paste it into a message to your friends.');
+  }
+}
+
+/**
+ * Join a challenge from a link (…#challenge=ID), a pasted link, or an invitation left by a friend.
+ * @returns true if the question was answered either way (so an invitation is not asked about again)
+ */
+async function joinChallenge(text = null, intro = '') {
+  if (text == null) {
+    const res = await ask({
+      title: 'Join a challenge',
+      body: 'Paste the link your friend sent you.',
+      input: { value: '', placeholder: 'Paste the link here' },
+      buttons: [{ label: 'JOIN', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (res.button !== 'save') return false;
+    text = res.text;
+  }
+  const link = readChallengeLink(text);
+  if (!link) { toast('That is not a challenge link. Ask your friend to send it again.', 5000); return false; }
+  if (chal.list.some((e) => e.ch.id === link.id)) {
+    showView('hunt');
+    toast('You are already in that challenge.');
+    return true;
+  }
+  let got;
+  try { got = await fetchChallenge(link.id); } catch { toast(NEEDS_SIGNAL, 5000); return false; }
+  if (!got) { toast('That challenge no longer exists.', 5000); return true; }
+  const ch = got.challenge, people = new Set(got.scores.map((s) => s.player)).size;
+  if (isOver(ch, today())) { toast(`"${ch.name}" has already finished.`, 5000); return true; }
+  const dare = link.dare ? `${link.dare.by} did a ${dareText(link.dare)}. Can you beat that?\n\n` : intro ? `${intro}\n\n` : '';
+  const res = await ask({
+    title: ch.name,
+    body: `${dare}Counts: ${CHALLENGE_KINDS[ch.kind].text}. Runs ${lengthText(ch)}. ${people ? `${people} ${people === 1 ? 'person is' : 'people are'} in so far.` : ''}\n\nJoining shares your name and how far you go each day with the others in it. It never shares where you are.${ch.teams.length ? '\n\nPick your team:' : ''}`,
+    buttons: [
+      ...(ch.teams.length ? ch.teams.map((x, i) => ({ label: x, value: `team:${x}`, cls: i ? 'ghost' : 'go' })) : [{ label: 'I\'M IN', value: 'team:', cls: 'go' }]),
+      { label: 'Not now', value: 'cancel' },
+    ],
+  });
+  if (!res.button.startsWith('team:')) return true;
+  const entry = { ch: { id: ch.id, name: ch.name, kind: ch.kind, start: ch.start, days: ch.days, teams: ch.teams, by: ch.by }, team: res.button.slice(5), scores: got.scores };
+  chal.list.unshift(entry);
+  saveChal();
+  showView('hunt');
+  toast('You are in. Save a walk or ride today and it counts.', 5000);
+  refreshChallenge(entry).then(renderChallenges, () => {});
+  return true;
+}
+
+/** Challenges friends sent through the app: asked about once each. */
+async function checkInbox() {
+  if (!settings.friendCode || !navigator.onLine || state.current || $('dlg').open) return;
+  let invites;
+  try { invites = await fetchInvites(settings.friendCode); } catch { return; }
+  for (const inv of invites) {
+    if (chal.seen.includes(inv.challenge) || chal.list.some((e) => e.ch.id === inv.challenge) || $('dlg').open) continue;
+    if (await joinChallenge(inv.challenge, inv.title || `${inv.from} sent you a challenge.`)) {
+      chal.seen = [...chal.seen, inv.challenge].slice(-100);
+      saveChal();
+    }
+  }
+}
+
+$('chal-body').addEventListener('click', async (e) => {
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (!act) return;
+  if (act === 'new') {
+    const entry = await newChallenge();
+    if (entry) await inviteTo(entry);
+    return;
+  }
+  if (act === 'join') { await joinChallenge(); return; }
+  const entry = chal.list.find((x) => x.ch.id === e.target.closest('.chal')?.dataset.id);
+  if (!entry) return;
+  if (act === 'invite') await inviteTo(entry);
+  else if (act === 'days') {
+    const days = dailyWinners(entry.ch, entry.scores ?? [], today());
+    await ask({
+      title: `${entry.ch.name}: daily winners`,
+      body: days.length ? days.map((d) => `${dayLabel(d.day)}: ${d.name}, ${fmtDist(d.dist)}${d.tie ? ' each' : ''}`).join('\n') : 'No day has finished yet. The first winner is named tomorrow.',
+      buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }],
+    });
+  } else if (act === 'leave') {
+    const res = await ask({
+      title: `Leave "${entry.ch.name}"?`,
+      body: 'It comes off this phone and your later outings stop counting. What you already did stays on the board for the others.',
+      buttons: [{ label: 'Stay in', value: 'cancel', cls: 'go' }, { label: 'Leave', value: 'yes', cls: 'stop' }],
+    });
+    if (res.button !== 'yes') return;
+    chal.list = chal.list.filter((x) => x !== entry);
+    saveChal();
+    renderChallenges();
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && tracker) refreshChallenges().then(checkInbox, () => {});
+});
 
 // ---- sending rides to the owner's map ---------------------------------------------------
 //
@@ -2651,6 +2994,8 @@ function showView(view) {
   if (view === 'hunt') {
     if (game?.status === 'active' && tracker?.geo && !state.gpsWanted) startGps(); // a hunt needs to know where you are
     renderHunt();
+    renderChallenges();
+    refreshChallenges();
   }
   if (view === 'settings') renderSettings();
   if (view === 'net') {
@@ -2837,6 +3182,7 @@ async function boot() {
   window.addEventListener('hashchange', checkInvite); // the link was tapped while the app was already open
   await checkInvite();
   runSync(); // does nothing unless cloud sync is on
+  refreshChallenges().then(checkInbox, () => {}); // nothing unless a challenge is under way or a friend has sent one
   if (OLD_HOME && !state.current) {
     notice(cloud.code ? 'This app has a new address. Go to Settings > Cloud sync and tap "Move to the app\'s new address".'
       : 'This app has a new address. To take your rides with you: Settings > Cloud sync > Turn on cloud sync, then "Move to the app\'s new address".');
@@ -2847,9 +3193,11 @@ async function boot() {
 async function checkInvite() {
   const hash = location.hash;
   const invite = /[#&]friend=([^&]+)/.exec(hash), hunt = /[#&]hunt=/.test(hash), map = /[#&]map=/.test(hash), sync = /[#&]sync=/.test(hash);
-  if ((!invite && !hunt && !map && !sync) || $('dlg').open) return;
+  const dared = /[#&]challenge=/.test(hash);
+  if ((!invite && !hunt && !map && !sync && !dared) || $('dlg').open) return;
   history.replaceState(null, '', location.pathname + location.search);
-  if (sync) await joinSync(hash);
+  if (dared) await joinChallenge(hash);
+  else if (sync) await joinSync(hash);
   else if (map) {
     const code = cleanTransferCode(hash);
     if (code) await sendToMap(code);

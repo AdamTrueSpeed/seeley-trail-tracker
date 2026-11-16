@@ -27,6 +27,11 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS items_seq ON items (grp, seq)`,
   `CREATE TABLE IF NOT EXISTS points (grp TEXT NOT NULL, ride TEXT NOT NULL, part INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY (grp, ride, part))`,
   `CREATE TABLE IF NOT EXISTS photos (grp TEXT NOT NULL, id TEXT NOT NULL, type TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (grp, id))`,
+  // Challenges between friends (see the end of this file). They are not filed under a family: whoever holds a challenge's id is in it.
+  `CREATE TABLE IF NOT EXISTS challenges (id TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS scores (challenge TEXT NOT NULL, player TEXT NOT NULL, day TEXT NOT NULL, name TEXT NOT NULL, team TEXT NOT NULL,
+     dist REAL NOT NULL, ms INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (challenge, player, day))`,
+  `CREATE TABLE IF NOT EXISTS invites (inbox TEXT NOT NULL, challenge TEXT NOT NULL, sender TEXT NOT NULL, title TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (inbox, challenge))`,
 ];
 let ready = null;
 const prepare = (db) => (ready ??= db.batch(SCHEMA.map((sql) => db.prepare(sql))).catch((err) => { ready = null; throw err; }));
@@ -117,12 +122,94 @@ async function photo(db, grp, id, request) {
   return json({ ok: true });
 }
 
+// ---- challenges between friends ---------------------------------------------------------
+//
+//   PUT /api/challenge/<id>          { name, kind, start, days, teams, by }   made once; later PUTs change nothing
+//   GET /api/challenge/<id>          -> { challenge, scores: [{ player, name, team, day, dist, ms }] }
+//   PUT /api/challenge/<id>/score    { player, name, team, days: [{ day, dist, ms }] }   a player's own daily totals
+//   POST /api/invite                 { to: [inbox], challenge, from, title }   "inbox" is a one-way hash of a friend code
+//   GET /api/invites/<inbox>         -> { invites: [{ challenge, from, title, created }] }
+//
+// Only a name, a team and a distance per day are kept: no positions. Anyone holding
+// a challenge's id (it is in the link the challenger sends) can see and join it.
+
+const CHALLENGE_ID = /^[A-HJKMNP-TV-Z2-9]{10}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const KINDS_OF_CHALLENGE = new Set(['any', 'foot', 'wheels']);
+const INVITE_LIFE = 30 * 86400000;
+const short = (v, max) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
+
+async function challenge(db, id, sub, request) {
+  if (request.method === 'GET' && !sub) {
+    const row = await db.prepare('SELECT data FROM challenges WHERE id = ?').bind(id).first();
+    if (!row) return fail(404, 'no such challenge');
+    const scores = (await db.prepare('SELECT player, name, team, day, dist, ms FROM scores WHERE challenge = ? ORDER BY day, dist DESC LIMIT 5000').bind(id).all()).results;
+    return json({ challenge: { id, ...JSON.parse(row.data) }, scores });
+  }
+  if (request.method !== 'PUT') return fail(404, 'no such address');
+  const body = await request.json().catch(() => null);
+  if (!sub) {
+    const teams = Array.isArray(body?.teams) ? [...new Set(body.teams.map((t) => short(t, 24)).filter(Boolean))].slice(0, 6) : [];
+    const data = {
+      name: short(body?.name, 60), kind: body?.kind, start: body?.start,
+      days: Number.isInteger(body?.days) && body.days >= 0 && body.days <= 366 ? body.days : 0,
+      teams: teams.length > 1 ? teams : [], by: short(body?.by, 40),
+    };
+    if (!data.name || !KINDS_OF_CHALLENGE.has(data.kind) || !DAY.test(data.start ?? '')) return fail(400, 'bad challenge');
+    await db.prepare('INSERT OR IGNORE INTO challenges (id, created, data) VALUES (?, ?, ?)').bind(id, Date.now(), JSON.stringify(data)).run();
+    return json({ ok: true });
+  }
+  if (sub !== 'score') return fail(404, 'no such address');
+  const player = short(body?.player, 40), name = short(body?.name, 40), days = Array.isArray(body?.days) ? body.days.slice(0, 40) : [];
+  if (!/^[A-Za-z0-9_-]{6,40}$/.test(player) || !name) return fail(400, 'bad player');
+  const row = await db.prepare('SELECT data FROM challenges WHERE id = ?').bind(id).first();
+  if (!row) return fail(404, 'no such challenge');
+  const teams = JSON.parse(row.data).teams ?? [];
+  const team = teams.includes(body?.team) ? body.team : '';
+  const clean = days.filter((d) => DAY.test(d?.day ?? '') && Number.isFinite(d.dist) && d.dist >= 0 && d.dist < 2e6);
+  if (clean.length) {
+    await db.batch(clean.map((d) => db.prepare(
+      `INSERT INTO scores (challenge, player, day, name, team, dist, ms, updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+       ON CONFLICT (challenge, player, day) DO UPDATE SET name = ?4, team = ?5, dist = ?6, ms = ?7, updated = ?8`,
+    ).bind(id, player, d.day, name, team, Math.round(d.dist), Math.max(0, Math.round(Number(d.ms) || 0)), Date.now())));
+  }
+  // The name and team a player goes by now apply to their earlier days as well.
+  await db.prepare('UPDATE scores SET name = ?, team = ? WHERE challenge = ? AND player = ?').bind(name, team, id, player).run();
+  return json({ ok: true });
+}
+
+async function invites(db, what, id, request) {
+  if (what === 'invite' && request.method === 'POST') {
+    const body = await request.json().catch(() => null);
+    const to = Array.isArray(body?.to) ? body.to.filter((x) => /^[0-9a-f]{64}$/.test(x)).slice(0, 50) : [];
+    if (!to.length || !CHALLENGE_ID.test(body?.challenge ?? '')) return fail(400, 'bad invite');
+    const sender = short(body.from, 40) || 'A friend', title = short(body.title, 120);
+    await db.batch(to.map((inbox) => db.prepare(
+      'INSERT INTO invites (inbox, challenge, sender, title, created) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (inbox, challenge) DO UPDATE SET sender = ?3, title = ?4, created = ?5',
+    ).bind(inbox, body.challenge, sender, title, Date.now())));
+    return json({ ok: true, sent: to.length });
+  }
+  if (what === 'invites' && request.method === 'GET' && /^[0-9a-f]{64}$/.test(id ?? '')) {
+    await db.prepare('DELETE FROM invites WHERE created < ?').bind(Date.now() - INVITE_LIFE).run();
+    const rows = (await db.prepare('SELECT challenge, sender, title, created FROM invites WHERE inbox = ? ORDER BY created DESC LIMIT 50').bind(id).all()).results;
+    return json({ invites: rows.map((r) => ({ challenge: r.challenge, from: r.sender, title: r.title, created: r.created })) });
+  }
+  return fail(404, 'no such address');
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     try {
+      const [, , kind, key, sub] = url.pathname.split('/');
+      if (kind === 'challenge' || kind === 'invite' || kind === 'invites') {
+        await prepare(env.DB);
+        if (kind !== 'challenge') return await invites(env.DB, kind, key, request);
+        if (!CHALLENGE_ID.test(key ?? '')) return fail(404, 'no such challenge');
+        return await challenge(env.DB, key, sub, request);
+      }
       const grp = await groupOf(request);
       if (!grp) return fail(401, 'a sync code is needed');
       await prepare(env.DB);
