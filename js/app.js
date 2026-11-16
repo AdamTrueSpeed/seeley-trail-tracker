@@ -20,10 +20,10 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.23';
+const VERSION = '1.24';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const REF_VERSION = '3'; // raise whenever reference.kml changes, so phones pick up the corrected map
+const REF_VERSION = '4'; // raise whenever reference.kml changes, so phones pick up the corrected map
 const SHARE_URL ='https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
