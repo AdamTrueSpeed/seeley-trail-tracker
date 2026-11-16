@@ -7,6 +7,8 @@ android-app/android/.gradle/
 android-app/android/build/
 android-app/android/app/build/
 android-app/android/capacitor-cordova-android-plugins/
+android-app/play-store/
+*.aab
 *.keystore
 *.jks
 *.apk

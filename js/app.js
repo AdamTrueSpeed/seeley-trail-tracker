@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.22';
+const VERSION = '1.23';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '3'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -603,7 +603,25 @@ async function setWake(on) {
   }
 }
 
+/**
+ * Inside the Android app: say plainly what location is used for, before the phone
+ * asks for permission. Google Play requires this wording to be shown, and agreed to,
+ * by anyone whose location is used with the screen off. Resolves true once agreed.
+ */
+async function discloseLocation() {
+  if (!NATIVE || localStorage.getItem('tt-native-disclosed')) return true;
+  const res = await ask({
+    title: 'Your location',
+    body: 'Seeley Trail Tracker collects location data to record the line of your walk or ride on the map, even when the app is closed or not in use, such as when the screen is off or another app is in front.\n\nThis only happens while you are recording: from the moment you press START until you press FINISH. A notification is shown the whole time.\n\nYour location stays on this phone unless you turn on cloud sync or location sharing yourself.',
+    buttons: [{ label: 'I AGREE', value: 'save', cls: 'go' }, { label: 'No thanks', value: 'cancel' }],
+  });
+  if (res.button !== 'save') return false;
+  localStorage.setItem('tt-native-disclosed', '1');
+  return true;
+}
+
 function startGps() {
+  if (NATIVE && !localStorage.getItem('tt-native-disclosed')) return; // not before the explanation above has been agreed to
   state.gpsWanted = true;
   if (NATIVE) localStorage.setItem('tt-native-gps', '1'); // asked for once: next time GPS comes on by itself
   tracker.watch();
@@ -683,6 +701,7 @@ async function startRide() {
   if (!tracker.geo) { toast('This browser cannot use GPS.'); return; }
   if (starting || state.current) return;
   starting = true;
+  if (!(await discloseLocation())) { starting = false; return; }
   const vehicle = await chooseVehicle('How are you travelling?', settings.vehicle);
   starting = false;
   if (!vehicle) return;
@@ -3146,7 +3165,7 @@ $('btn-pause').addEventListener('click', () => {
 });
 $('status').addEventListener('click', () => {
   if (NATIVE && tracker.error === 'denied') { openAppSettings().catch(() => {}); return; } // location was refused: the phone's settings are the only way back
-  if (!state.gpsWanted) startGps();
+  if (!state.gpsWanted) discloseLocation().then((ok) => { if (ok) startGps(); });
 });
 
 $('ride-in').addEventListener('click', () => rideMap.zoom(1.5));

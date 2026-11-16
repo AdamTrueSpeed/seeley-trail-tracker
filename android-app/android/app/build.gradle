@@ -16,8 +16,22 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // The Play Store upload key. Nothing secret is kept in this project: the key file's place and its
+    // passwords come from the environment of whoever runs the build. Without them the release is built unsigned.
+    def uploadKey = System.getenv('SEELEY_UPLOAD_KEYSTORE')
+    signingConfigs {
+        upload {
+            if (uploadKey) {
+                storeFile file(uploadKey)
+                storePassword System.getenv('SEELEY_UPLOAD_PASSWORD')
+                keyAlias System.getenv('SEELEY_UPLOAD_ALIAS') ?: 'upload'
+                keyPassword System.getenv('SEELEY_UPLOAD_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
+            if (uploadKey) signingConfig signingConfigs.upload
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
