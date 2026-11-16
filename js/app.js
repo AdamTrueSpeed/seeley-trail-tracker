@@ -19,7 +19,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.20';
+const VERSION = '1.21';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '3'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -2599,8 +2599,41 @@ const OLD_HOME = location.hostname.endsWith('github.io');
 $('btn-sync-move').addEventListener('click', async () => {
   await runSync(true);
   if (cloud.error) return; // not everything is in the cloud yet
-  location.href = `${SHARE_URL}#sync=${cloud.code}`;
+  location.href = `${SHARE_URL}#sync=${cloud.code}&moved=1`;
 });
+
+/**
+ * Opened at the old address: go to the new one, taking the rides along, without
+ * the user having to do anything. Returns true if the new address is being opened.
+ *  - nothing on this device (a new user with an old link): straight across;
+ *  - cloud sync already on: sync, then across with the family code, so the new
+ *    address shows the same rides. This happens every time the old icon is used;
+ *  - rides here but sync off: ask once (and not again for a week), since moving
+ *    them means putting a copy in the cloud.
+ * With no signal, or a ride left unfinished, the old address simply carries on working.
+ */
+async function leaveOldHome() {
+  if (!navigator.onLine || state.rides.some((r) => r.status !== 'done')) return false;
+  if (!state.rides.length && !state.pins.length && !cloud.code) {
+    location.replace(SHARE_URL + location.hash); // a friend, hunt or challenge link carries on working
+    return true;
+  }
+  if (cloud.code) await runSync();
+  else {
+    if (Date.now() - Number(localStorage.getItem('tt-move-asked') ?? 0) < 7 * 86400000) return false;
+    localStorage.setItem('tt-move-asked', String(Date.now()));
+    const res = await ask({
+      title: 'This app has a new home',
+      body: 'Your walks, rides and pins can come with you. It needs a signal and takes a moment: they are copied to your own cloud storage, then the app opens at its new home with everything in it.',
+      buttons: [{ label: 'MOVE THEM NOW', value: 'save', cls: 'go' }, { label: 'Later', value: 'cancel' }],
+    });
+    if (res.button !== 'save') return false;
+    await useSyncCode(cleanSyncCode(localStorage.getItem('tt-sync-code-last')) ?? newSyncCode());
+  }
+  if (cloud.error || !cloud.at) return false; // not everything is in the cloud yet: try again next time
+  location.replace(`${SHARE_URL}#sync=${cloud.code}&moved=1`);
+  return true;
+}
 
 /** Exchange changes with the cloud now, unless something is in the way (a ride being recorded, a question on screen). */
 async function runSync(manual = false) {
@@ -2666,7 +2699,8 @@ $('btn-sync-on').addEventListener('click', async () => {
   else if (res.button === 'save') await useSyncCode(cleanSyncCode(localStorage.getItem('tt-sync-code-last')) ?? newSyncCode());
 });
 
-async function joinSync(text = null) {
+/** @param quiet arriving from the app's old address with this device's own code: nothing to ask */
+async function joinSync(text = null, quiet = false) {
   if (text == null) {
     const res = await ask({
       title: 'Join your family\'s sync',
@@ -2679,7 +2713,8 @@ async function joinSync(text = null) {
   }
   const code = cleanSyncCode(text);
   if (!code) { toast('That is not a sync link or code.', 5000); return; }
-  if (code === cloud.code) { toast('This device is already using that code.'); return; }
+  if (code === cloud.code) { if (!quiet) toast('This device is already using that code.'); return; }
+  if (quiet && !cloud.code) { await useSyncCode(code); return; }
   const mine = doneRides().length;
   const res = await ask({
     title: 'Join this family sync?',
@@ -3141,6 +3176,7 @@ setInterval(() => { if (tracker && settings.sharing !== 'private') renderPeople(
 async function boot() {
   for (const [key, c] of Object.entries(TRAIL_COLORS)) $('color').add(new Option(c.label, key));
   await loadAll();
+  if (OLD_HOME && !DEMO && await leaveOldHome()) return; // the app's new address is opening instead
 
   let geo = navigator.geolocation;
   if (DEMO) {
@@ -3183,10 +3219,6 @@ async function boot() {
   await checkInvite();
   runSync(); // does nothing unless cloud sync is on
   refreshChallenges().then(checkInbox, () => {}); // nothing unless a challenge is under way or a friend has sent one
-  if (OLD_HOME && !state.current) {
-    notice(cloud.code ? 'This app has a new address. Go to Settings > Cloud sync and tap "Move to the app\'s new address".'
-      : 'This app has a new address. To take your rides with you: Settings > Cloud sync > Turn on cloud sync, then "Move to the app\'s new address".');
-  }
 }
 
 /** Opened from a friend's "add me" link (…#friend=CODE) or a hunt link (…#hunt=CODE)? Offer to add them, or open the hunt. */
@@ -3197,7 +3229,19 @@ async function checkInvite() {
   if ((!invite && !hunt && !map && !sync && !dared) || $('dlg').open) return;
   history.replaceState(null, '', location.pathname + location.search);
   if (dared) await joinChallenge(hash);
-  else if (sync) await joinSync(hash);
+  else if (sync) {
+    const moved = /[#&]moved=1/.test(hash);
+    await joinSync(hash, moved);
+    // Said once: the old home-screen icon still works (it brings you here), but this is the one to keep.
+    if (moved && !INSTALLED && !localStorage.getItem('tt-moved-told')) {
+      localStorage.setItem('tt-moved-told', '1');
+      await ask({
+        title: 'You are at the app\'s new home',
+        body: `Everything came with you.\n\nTo finish, put this one on your home screen: ${IOS ? 'tap Share, then Add to Home Screen' : 'tap INSTALL at the top of the screen (or the browser menu, then Install app)'}. After that you can delete the old icon.`,
+        buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }],
+      });
+    }
+  }
   else if (map) {
     const code = cleanTransferCode(hash);
     if (code) await sendToMap(code);
