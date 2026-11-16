@@ -333,6 +333,28 @@ dialog input[type=text] {
 /* ---- photos ---- */
 #dlg-img { display: block; max-width: 100%; max-height: 46vh; margin: 0 auto 12px; border-radius: 10px; border: 2px solid var(--line); }
 #dlg-img[hidden] { display: none; }
+
+/* ---- full-screen photo you can zoom ---- */
+#viewer {
+  width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none;
+  margin: 0; padding: 0; border: 0; border-radius: 0; overflow: hidden; background: #000;
+}
+#viewer[open] { display: flex; flex-direction: column; }
+#viewer-stage {
+  flex: 1; min-height: 0; overflow: hidden; touch-action: none;
+  display: flex; align-items: center; justify-content: center;
+}
+#viewer-img {
+  max-width: 100%; max-height: 100%; object-fit: contain; will-change: transform;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.viewer-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 2px solid var(--line);
+}
+.viewer-bar div { flex: 1; min-width: 0; }
+.viewer-bar b { display: block; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-bar span { display: block; color: var(--muted); font-size: 13px; }
 .list .thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 10px; border: 2px solid var(--info); display: block; }
 
 /* ---- share this app ---- */

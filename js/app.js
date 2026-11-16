@@ -15,7 +15,7 @@ import { sendPackage, cleanTransferCode } from './transfer.js';
 import { syncNow, newSyncCode, cleanSyncCode, forgetSync } from './sync.js';
 import { haversine } from './geo.js';
 
-const VERSION = '1.16';
+const VERSION = '1.17';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const SHARE_URL = 'https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
@@ -981,13 +981,87 @@ async function viewPhoto(pin) {
   const blob = await photoOf(pin);
   if (!blob) { toast('The picture for this pin is missing.'); return; }
   const url = URL.createObjectURL(blob);
-  await ask({
-    title: pin.name,
-    body: `${byName(pin)} · ${fmtDate(pin.t)} · ±${Math.round(pin.acc)} m · ${pin.lat.toFixed(5)}, ${pin.lon.toFixed(5)}`,
-    image: url,
-    buttons: [{ label: 'Close', value: 'cancel' }],
-  });
+  await showPicture(url, pin.name, `${byName(pin)} · ${fmtDate(pin.t)} · ±${Math.round(pin.acc)} m · pinch or double-tap to zoom`);
   URL.revokeObjectURL(url);
+}
+
+/** A picture at full screen. Pinch, drag, double-tap or use the mouse wheel to zoom. Resolves when closed. */
+function showPicture(url, title, info) {
+  const box = $('viewer'), stage = $('viewer-stage'), img = $('viewer-img');
+  $('viewer-title').textContent = title;
+  $('viewer-info').textContent = info;
+  img.style.transform = '';
+  img.src = url;
+  let s = 1, x = 0, y = 0, lastTap = 0, moved = 0;
+  const fingers = new Map();
+  const apply = () => {
+    s = Math.min(8, Math.max(1, s));
+    // never let the picture be dragged off the screen
+    const mx = Math.max(0, (img.offsetWidth * s - stage.clientWidth) / 2);
+    const my = Math.max(0, (img.offsetHeight * s - stage.clientHeight) / 2);
+    x = Math.min(mx, Math.max(-mx, x));
+    y = Math.min(my, Math.max(-my, y));
+    img.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
+  };
+  /** Zoom to `next`, keeping the spot under (px, py) where it is. */
+  const zoomAt = (px, py, next) => {
+    next = Math.min(8, Math.max(1, next));
+    const r = stage.getBoundingClientRect();
+    const dx = px - (r.left + r.width / 2), dy = py - (r.top + r.height / 2);
+    const k = next / s;
+    x = dx - k * (dx - x);
+    y = dy - k * (dy - y);
+    s = next;
+    apply();
+  };
+  const pair = () => {
+    const [a, b] = [...fingers.values()];
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) || 1 };
+  };
+  const stop = new AbortController();
+  const on = (el, type, fn, opts = {}) => el.addEventListener(type, fn, { signal: stop.signal, ...opts });
+  on(stage, 'pointerdown', (e) => {
+    stage.setPointerCapture?.(e.pointerId);
+    if (!fingers.size) moved = 0;
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  });
+  on(stage, 'pointermove', (e) => {
+    const was = fingers.get(e.pointerId);
+    if (!was) return;
+    if (fingers.size === 1) {
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      moved += Math.abs(e.clientX - was.x) + Math.abs(e.clientY - was.y);
+      if (s > 1) { x += e.clientX - was.x; y += e.clientY - was.y; apply(); }
+    } else if (fingers.size === 2) {
+      const before = pair();
+      fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const after = pair();
+      moved = 99;
+      x += after.x - before.x;
+      y += after.y - before.y;
+      zoomAt(after.x, after.y, s * after.d / before.d);
+    }
+  });
+  const lift = (e) => {
+    if (!fingers.delete(e.pointerId) || fingers.size || e.type !== 'pointerup' || moved > 10) return;
+    const now = performance.now();
+    if (now - lastTap < 320) { zoomAt(e.clientX, e.clientY, s > 1 ? 1 : 3); lastTap = 0; } else lastTap = now;
+  };
+  on(stage, 'pointerup', lift);
+  on(stage, 'pointercancel', lift);
+  on(stage, 'wheel', (e) => { e.preventDefault(); zoomAt(e.clientX, e.clientY, s * (e.deltaY < 0 ? 1.25 : 0.8)); }, { passive: false });
+  return new Promise((resolve) => {
+    const done = () => {
+      stop.abort();
+      img.removeAttribute('src');
+      img.style.transform = '';
+      resolve();
+    };
+    // Finish on the tap itself: the dialog's own "close" event can arrive late (see ask()).
+    on($('viewer-close'), 'click', () => { box.close(); done(); });
+    on(box, 'close', done);
+    box.showModal();
+  });
 }
 
 /** A ride left "recording" means the app was closed mid-ride. Its points are all on disk. */

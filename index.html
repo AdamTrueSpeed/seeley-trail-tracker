@@ -148,6 +148,17 @@
 
   <!-- ===== Settings ===== -->
   <section class="view page" id="view-settings" hidden>
+    <h1>Cloud sync</h1>
+    <p class="hint" id="sync-info"></p>
+    <div class="btnrow">
+      <button id="btn-sync-on" class="mid">Turn on cloud sync</button>
+      <button id="btn-sync-join" class="mid ghost">Join with a code</button>
+      <button id="btn-sync-now" class="mid" hidden>Sync now</button>
+      <button id="btn-sync-add" class="mid" hidden>Add another phone or computer</button>
+      <button id="btn-sync-move" class="mid" hidden>Move to the app's new address</button>
+      <button id="btn-sync-off" class="mid ghost" hidden>Turn off</button>
+    </div>
+
     <h1>You</h1>
     <div class="toggle">
       <img id="avatar-img" class="avatar" alt="">
@@ -232,17 +243,6 @@
     <h1>Google Earth export</h1>
     <label class="toggle"><span>Trail colour</span><select id="color"></select></label>
 
-    <h1>Cloud sync</h1>
-    <p class="hint" id="sync-info"></p>
-    <div class="btnrow">
-      <button id="btn-sync-on" class="mid">Turn on cloud sync</button>
-      <button id="btn-sync-join" class="mid ghost">Join with a code</button>
-      <button id="btn-sync-now" class="mid" hidden>Sync now</button>
-      <button id="btn-sync-add" class="mid" hidden>Add another phone or computer</button>
-      <button id="btn-sync-move" class="mid" hidden>Move to the app's new address</button>
-      <button id="btn-sync-off" class="mid ghost" hidden>Turn off</button>
-    </div>
-
     <h1>Backup</h1>
     <p class="hint" id="storage-info"></p>
     <div class="btnrow">
@@ -288,6 +288,14 @@
     <div id="dlg-chips" class="chips"></div>
     <div id="dlg-btns" class="dlg-btns"></div>
   </form>
+</dialog>
+<!-- A photo at full screen: pinch, drag or double-tap to zoom. -->
+<dialog id="viewer">
+  <div id="viewer-stage"><img id="viewer-img" alt="" draggable="false"></div>
+  <div class="viewer-bar">
+    <div><b id="viewer-title"></b><span id="viewer-info"></span></div>
+    <button id="viewer-close" class="mid">Close</button>
+  </div>
 </dialog>
 <div id="toast" class="toast" hidden></div>
 
