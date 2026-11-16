@@ -1,3 +1,12 @@
 node_modules/
 .wrangler/
 .dev.vars
+# Android app: build output and anything machine-specific or secret stays out
+android-app/android/local.properties
+android-app/android/.gradle/
+android-app/android/build/
+android-app/android/app/build/
+android-app/android/capacitor-cordova-android-plugins/
+*.keystore
+*.jks
+*.apk

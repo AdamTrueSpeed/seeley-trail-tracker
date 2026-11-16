@@ -1,0 +1,12 @@
+{
+  "appId": "com.seeleytrails.tracker",
+  "appName": "Seeley Trail Tracker",
+  "webDir": "www",
+  "server": {
+    "url": "https://seeley-trail-tracker.seeley-trails.workers.dev/",
+    "errorPath": "offline.html"
+  },
+  "android": {
+    "useLegacyBridge": true
+  }
+}

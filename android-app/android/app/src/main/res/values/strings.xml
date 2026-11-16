@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Seeley Trail Tracker</string>
+    <string name="title_activity_main">Seeley Trail Tracker</string>
+    <string name="package_name">com.seeleytrails.tracker</string>
+    <string name="custom_url_scheme">com.seeleytrails.tracker</string>
+    <!-- The notification shown while a walk or ride is being recorded with the screen off. -->
+    <string name="capacitor_background_geolocation_notification_channel_name">Recording a trail</string>
+    <string name="capacitor_background_geolocation_notification_icon">drawable/ic_tracking</string>
+</resources>
