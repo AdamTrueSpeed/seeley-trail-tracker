@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.26';
+const VERSION = '1.27';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '6'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -1145,10 +1145,26 @@ async function recoverUnfinished() {
       startActivity(ride);
       setWake(true);
     } else {
-      ride.name ||= `${capital(nounOf(ride))} ${doneRides().length + 1} (recovered)`;
+      // Saved the same way FINISH & SAVE does it: a name is asked for, and the summary is shown,
+      // so there is no doubt it was kept. (It used to be saved silently as "... (recovered)".)
+      const noun = nounOf(ride);
+      const n = doneRides().filter((r) => nounOf(r) === noun).length + 1;
+      const named = await ask({
+        title: `Save this ${noun}`,
+        body: `${fmtDist(m.dist)} recorded, all of it kept. Give it a name, such as the trail or loop you covered.`,
+        input: { value: ride.name || `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
+        buttons: [{ label: `SAVE ${noun.toUpperCase()}`, value: 'save', cls: 'go' }],
+      });
+      ride.name = named.text || ride.name || `${capital(noun)} ${n}`;
       ride.status = 'done';
     }
     await db.put('rides', ride);
+    if (ride.status === 'done') {
+      toast(`Saved "${ride.name}"`);
+      refreshRideMap();
+      syncSoon();
+      await showReport(ride, true);
+    }
   }
 }
 
