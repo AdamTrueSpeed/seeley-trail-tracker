@@ -13,11 +13,21 @@
 export const NATIVE = !!globalThis.Capacitor?.isNativePlatform?.();
 
 let plugins = null;
-/** The shell's plugins, by name. */
-async function plugin(name) {
+/**
+ * Do something with one of the shell's plugins: `use('Share', (share) => share.share(...))`.
+ *
+ * The plugin is handed to a function, never returned from a promise. A plugin
+ * answers to ANY name asked of it, including `then`, so a promise given one
+ * takes it for another promise, waits on it, and never finishes. That is what
+ * left the Android app with no GPS and no error (fixed in 1.27).
+ */
+export async function use(name, fn) {
   plugins ??= import('./capacitor-core.js');
-  return (await plugins).registerPlugin(name);
+  const { registerPlugin } = await plugins;
+  if (!known.has(name)) known.set(name, registerPlugin(name));
+  return fn(known.get(name));
 }
+const known = new Map();
 
 /**
  * A stand-in for navigator.geolocation that keeps working with the screen off.
@@ -29,7 +39,7 @@ export function nativeGeo() {
   return {
     watchPosition(ok, fail) {
       const id = next++;
-      watchers.set(id, plugin('BackgroundGeolocation').then((geo) => geo.addWatcher({
+      watchers.set(id, use('BackgroundGeolocation', (geo) => geo.addWatcher({
         backgroundTitle: 'Seeley Trail Tracker',
         backgroundMessage: 'GPS is on. Tap to open the app.',
         requestPermissions: true,
@@ -51,13 +61,13 @@ export function nativeGeo() {
     clearWatch(id) {
       const pending = watchers.get(id);
       watchers.delete(id);
-      pending?.then(async (watcher) => { if (watcher != null) (await plugin('BackgroundGeolocation')).removeWatcher({ id: watcher }); }).catch(() => {});
+      pending?.then((watcher) => (watcher != null ? use('BackgroundGeolocation', (geo) => geo.removeWatcher({ id: watcher })) : null)).catch(() => {});
     },
   };
 }
 
 /** Open the phone's settings page for this app (to allow location after it was refused). */
-export const openAppSettings = async () => (await plugin('BackgroundGeolocation')).openSettings();
+export const openAppSettings = () => use('BackgroundGeolocation', (geo) => geo.openSettings());
 
 const toBase64 = (buffer) => {
   let s = '';
@@ -69,8 +79,8 @@ const toBase64 = (buffer) => {
 /** Put a file where the share sheet can reach it; returns its address on the phone. */
 async function stash(name, data) {
   const buffer = typeof data === 'string' ? new TextEncoder().encode(data).buffer : data instanceof Blob ? await data.arrayBuffer() : data;
-  const fs = await plugin('Filesystem');
-  return (await fs.writeFile({ path: `share/${name.replace(/[^\w.\- ]+/g, '_')}`, data: toBase64(buffer), directory: 'CACHE', recursive: true })).uri;
+  const saved = await use('Filesystem', (fs) => fs.writeFile({ path: `share/${name.replace(/[^\w.\- ]+/g, '_')}`, data: toBase64(buffer), directory: 'CACHE', recursive: true }));
+  return saved.uri;
 }
 
 /**
@@ -79,9 +89,9 @@ async function stash(name, data) {
  * @returns 'shared' or 'cancelled'
  */
 export async function nativeSave(name, data) {
-  const share = await plugin('Share');
   try {
-    await share.share({ title: name, files: [await stash(name, data)], dialogTitle: `Save or send ${name}` });
+    const files = [await stash(name, data)];
+    await use('Share', (share) => share.share({ title: name, files, dialogTitle: `Save or send ${name}` }));
     return 'shared';
   } catch (err) {
     if (/cancel/i.test(String(err?.message ?? err))) return 'cancelled';
@@ -95,7 +105,7 @@ export function installShare() {
   const share = async (msg = {}) => {
     const files = await Promise.all((msg.files ?? []).map((f) => stash(f.name, f)));
     try {
-      await (await plugin('Share')).share({ title: msg.title, text: msg.text, url: files.length ? undefined : msg.url, files: files.length ? files : undefined, dialogTitle: msg.title });
+      await use('Share', (plugin) => plugin.share({ title: msg.title, text: msg.text, url: files.length ? undefined : msg.url, files: files.length ? files : undefined, dialogTitle: msg.title }));
     } catch (err) {
       if (/cancel/i.test(String(err?.message ?? err))) throw new DOMException('Share cancelled', 'AbortError');
       throw err;

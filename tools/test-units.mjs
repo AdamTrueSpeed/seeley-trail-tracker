@@ -293,5 +293,19 @@ function walk({ seconds, stepsPerSecond, swing, noise = 0.25, hz = 60, seed = 3 
   check('challenge: other links are not challenges', readChallengeLink('https://example.test/#hunt=abc') === null && readChallengeLink('') === null);
 }
 
+// ---- the Android app's plugins ----
+// A plugin answers to any name, `then` included, so a promise handed one never finishes (no GPS in the Android app, 1.20-1.26).
+{
+  const native = await import('../js/native.js');
+  const late = Symbol('never finished');
+  const within = (p) => Promise.race([p.then((v) => v, (e) => e), new Promise((r) => setTimeout(() => r(late), 1500))]);
+  const got = await within(native.use('BackgroundGeolocation', (geo) => typeof geo.addWatcher));
+  check('android: a plugin can be reached without waiting for ever', got === 'function', String(got?.message ?? got?.description ?? got));
+  const settings = await within(native.openAppSettings());
+  check('android: a plugin call comes back (here: refused, there is no phone)', settings !== late, String(settings?.message ?? settings?.description ?? settings));
+  const watch = await within(new Promise((resolve) => native.nativeGeo().watchPosition(() => resolve('fix'), (err) => resolve(err))));
+  check('android: asking for GPS answers, with a position or an error', watch !== late, String(watch?.message ?? watch?.description ?? watch));
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
