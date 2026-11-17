@@ -46,6 +46,13 @@ if (!process.env.SEELEY_SKIP_MAP) {
     const same = (a, b) => a.replace(/\r\n/g, '\n').trim() === b.replace(/\r\n/g, '\n').trim();
     if (!same(official, mine)) problems.push('reference.kml is not the newest trail map: copy doc.kml out of MacGregor_Estates_Trails.kmz and raise REF_VERSION in js/app.js');
     else console.log('ok   the built-in trail map is the newest official map');
+    // walked.kml (the GPS button's layer) is written beside the KMZ by the same script
+    const walkedSrc = join(kmz, '..', 'MacGregor_Estates_GPS_walked.kml');
+    if (existsSync(walkedSrc)) {
+      if (!existsSync(join(root, 'walked.kml')) || !same(readFileSync(walkedSrc, 'utf8'), readFileSync(join(root, 'walked.kml'), 'utf8'))) {
+        problems.push('walked.kml is not the newest: copy MacGregor_Estates_GPS_walked.kml over it and raise REF_VERSION in js/app.js');
+      } else console.log('ok   the GPS-recorded layer is the newest');
+    }
   } else console.log('note the official trail map is not on this computer: could not check that the built-in map is the newest');
   if (existsSync(walks)) {
     try {

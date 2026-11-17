@@ -91,6 +91,9 @@ button { cursor: pointer; touch-action: manipulation; }
   font-size: 28px; font-weight: 700; line-height: 1; padding: 0;
 }
 .mapbtns button.on { border-color: var(--info); color: var(--info); }
+.mapbtns button.word { font-size: 15px; letter-spacing: 0.5px; }
+.mapbtns button.word.on { border-color: #39ff14; color: #39ff14; }
+.mapbtns button[hidden] { display: none; }
 .mapbtns button:active { background: #333; }
 
 .notice {

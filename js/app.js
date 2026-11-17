@@ -20,10 +20,10 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.28';
+const VERSION = '1.29';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const REF_VERSION = '7'; // raise whenever reference.kml changes, so phones pick up the corrected map
+const REF_VERSION = '8'; // raise whenever reference.kml changes, so phones pick up the corrected map
 const SHARE_URL ='https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
@@ -65,7 +65,7 @@ const DEFAULTS = {
   friends: [],                            // [{ code, name }]
   weightKg: 80,                           // for the rough calorie figure
   vehicle: 'grizzly',                     // what the last ride was on (see VEHICLES in width.js)
-  color: 'orange', showRaw: true, showMerged: true, showRef: true,
+  color: 'orange', showRaw: true, showMerged: true, showRef: true, showWalked: false,
 };
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key)) ?? {}; } catch { return {}; } };
 const settings = { ...DEFAULTS, ...readJson('tt-settings') };
@@ -500,12 +500,18 @@ async function loadAll() {
         if (!state.ref || state.ref.name === fresh.name) {
           state.ref = fresh;
           await db.put('kv', state.ref, 'reference');
+          // With it comes a second file: the stretches of that map which have been walked or ridden with GPS.
+          try {
+            const walked = await fetch('walked.kml', { cache: 'no-store' });
+            if (walked.ok) await db.put('kv', parseKml(await walked.text()), 'walked');
+          } catch { /* none bundled: the GPS button stays hidden */ }
         }
         localStorage.setItem('tt-ref-ver', REF_VERSION);
       }
     } catch { /* none bundled, or offline: try again next time */ }
   }
   state.refIndex = prepareReference(state.ref);
+  state.walked = state.ref ? ((await db.get('kv', 'walked')) ?? null) : null;
   state.branches = (await db.get('kv', 'branches')) ?? [];
   state.branchIndex = branchIndexOf(state.branches);
 }
@@ -524,7 +530,16 @@ function refLines(alpha) {
   })));
 }
 
+/** A green glow under the stretches of the built-in map that GPS has been recorded along (the GPS button on the map). */
+function walkedLines(alpha) {
+  if (!state.walked || !state.ref || !settings.showRef || !settings.showWalked) return [];
+  return state.walked.lines.flatMap((l) => l.parts.map((pts) => ({ pts, color: '#39ff14', width: 8, alpha })));
+}
+
 function refreshRideMap() {
+  rideMap.setLayer('walked', walkedLines(0.6)); // first, so the map's own lines are drawn over it
+  $('ride-walked').hidden = !state.walked || !state.ref;
+  $('ride-walked').classList.toggle('on', !!settings.showWalked);
   rideMap.setLayer('ref', refLines(0.85));
   rideMap.setLabels(state.ref && settings.showRef ? state.ref.points : []);
   rideMap.setLayer('saved', doneRides().filter((r) => r.include).flatMap((r) =>
@@ -1422,6 +1437,7 @@ function renderNetwork(fit) {
   $('key-merged').style.background = css;
   $('show-ref-wrap').hidden = !state.ref;
 
+  netMap.setLayer('walked', walkedLines(0.45));
   netMap.setLayer('ref', refLines(0.5));
   netMap.setLabels(state.ref && settings.showRef ? state.ref.points : []);
   netMap.setLayer('raw', settings.showRaw
@@ -2892,6 +2908,8 @@ bindSetting('color', 'color', { event: 'change', after: () => { state.lastKml = 
 
 async function setReference(ref) {
   state.ref = ref;
+  state.walked = null; // it belongs to the built-in map only
+  await db.del('kv', 'walked');
   state.refIndex = prepareReference(ref);
   state.network = null;
   if (ref) {
@@ -3191,6 +3209,18 @@ $('ride-center').addEventListener('click', () => {
   rideMap.center();
 });
 $('ride-fit').addEventListener('click', () => rideMap.fit());
+$('ride-walked').addEventListener('click', () => {
+  settings.showWalked = !settings.showWalked;
+  if (settings.showWalked) settings.showRef = true; // nothing to see without the map itself
+  saveSettings();
+  refreshRideMap();
+  renderSettings();
+  state.network = null;
+  if (settings.showWalked && !state.current) rideMap.fit(['ref']); // show the whole map, unless a recording is following you
+  toast(settings.showWalked
+    ? 'Green: trails recorded with GPS. Dashes with no green: drawn from the old paper map only.'
+    : 'GPS-recorded trails hidden', 6000);
+});
 rideMap.onFollowChange = (on) => $('ride-center').classList.toggle('on', on);
 $('net-in').addEventListener('click', () => netMap.zoom(1.5));
 $('net-out').addEventListener('click', () => netMap.zoom(1 / 1.5));
