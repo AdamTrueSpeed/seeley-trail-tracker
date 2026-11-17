@@ -29,7 +29,7 @@ export const VEHICLES = [
   { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', effort: 'drive', basis: '66.1 in' },
   { key: 'renegade', name: 'Can-Am Renegade', short: 'Renegade', width: 1.22, kind: 'motor', basis: '48 in' },
   { key: 'outlander', name: 'Can-Am Outlander 650', short: 'Outlander', width: 1.17, kind: 'motor', basis: '46 in' },
-  { key: 'mower', name: 'Lawnmower', short: 'Lawnmower', width: 1.22, kind: 'motor', effort: 'drive', basis: 'ride-on mower with a 48 in deck' },
+  { key: 'mower', name: 'Lawnmower', short: 'Lawnmower', width: 1.55, kind: 'motor', effort: 'drive', basis: 'ride-on mower with a 61 in deck' },
 ];
 
 /** Rides recorded before the app asked were taken to be on the Grizzly. */
