@@ -57,7 +57,7 @@ if (!process.env.SEELEY_SKIP_MAP) {
   if (existsSync(walks)) {
     try {
       const out = execFileSync(process.execPath, [join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js'), 'd1', 'execute', 'seeley-trails', '--remote', '--json',
-        '--command', "SELECT id, json_extract(data, '$.name') AS name FROM items WHERE kind = 'ride' AND deleted = 0"], { cwd: root, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
+        '--command', "SELECT id, json_extract(data, '$.name') AS name FROM items WHERE kind = 'ride' AND deleted = 0 AND json_extract(data, '$.system') IS NULL"], { cwd: root, encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] });
       const cloud = JSON.parse(out.slice(out.indexOf('[')))[0].results;
       const onMap = new Set(JSON.parse(readFileSync(walks, 'utf8')).rides.map((r) => String(r.id)));
       const missing = cloud.filter((r) => !onMap.has(String(r.id)));
