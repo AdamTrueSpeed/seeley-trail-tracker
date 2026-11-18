@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.38';
+const VERSION = '1.39';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '16'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -36,10 +36,10 @@ installShare(); // inside the Android app, "share" buttons use the phone's share
 const SCREEN_TIP = IOS
   ? 'This iPhone would not let the app keep the screen on. While riding, set Settings > Display & Brightness > Auto-Lock to Never.'
   : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.';
-// Quick labels: one list offered for plain pins, one for photos.
-const PIN_LABELS = ['Trail marker', 'Hazard', 'Bridge', 'Intersection', 'Trailhead', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint', 'Point of interest', 'Deer stand'];
+// The HEADINGS a pin or a photo can be filed under (a description is written under the heading: see describePin).
+const PIN_LABELS = ['Trailhead', 'Point of interest', 'Trail marker', 'Hazard', 'Bridge', 'Intersection', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint', 'Deer stand'];
 const PHOTO_LABELS = [
-  'Trail marker', 'Point of interest', 'Cool sight', 'Deer stand', 'Mushroom', 'Wildlife', 'Animal tracks', 'Big tree', 'Wildflowers',
+  'Trailhead', 'Point of interest', 'Trail marker', 'Cool sight', 'Deer stand', 'Mushroom', 'Wildlife', 'Animal tracks', 'Big tree', 'Wildflowers',
   'Berry patch', 'Beaver dam', 'Creek or pond', 'Lookout', 'Old ruins', 'Campsite', 'Boundary marker', 'Trail damage',
 ];
 // What a trail can be like underfoot. The rider picks one while recording and it sticks until changed.
@@ -1001,30 +1001,77 @@ function spotNow() {
   return null;
 }
 
+/**
+ * What a pin or photo is, asked in two steps (the owner, 2026-11-18): first the
+ * HEADING, picked from a list ("Trailhead", "Point of interest" ...), then a short
+ * DESCRIPTION written under that heading ("Trespassing sign").
+ *
+ * @param o { photo, image, where, head, desc }: `where` is the line about the position;
+ *          `head` and `desc` are the present values when something is being renamed
+ * @returns { head, desc } (desc may be ''), or null if it was backed out of at the heading,
+ *          or 'discard' if the photo is to be thrown away
+ */
+async function describePin(o) {
+  const what = o.photo ? 'photo' : 'pin';
+  // Headings typed on this phone before come first, then the standard ones.
+  const own0 = (Array.isArray(readJson('tt-pin-heads')) ? readJson('tt-pin-heads') : []).filter((h) => typeof h === 'string');
+  const list = [...own0, ...(o.photo ? PHOTO_LABELS : PIN_LABELS).filter((l) => !own0.includes(l))];
+  const picked = await ask({
+    title: o.rename ? `Change this ${what}'s heading` : `What is this ${what}?`,
+    body: `${o.where ? `${o.where} ` : ''}Choose a heading. You can add a few words of your own next.`,
+    image: o.image ?? null,
+    chips: [...(o.head && !list.includes(o.head) ? [o.head] : []), ...list, 'Something else…'],
+    pick: true,
+    focus: false,
+    buttons: o.photo && !o.rename
+      ? [{ label: 'Throw it away', value: 'discard', cls: 'stop' }]
+      : [{ label: 'Cancel', value: 'cancel' }],
+  });
+  if (picked.button === 'discard') return 'discard';
+  if (picked.button !== 'chip') return null;
+  let head = picked.text;
+  if (head === 'Something else…') {
+    const own = await ask({
+      title: 'Your own heading',
+      body: 'One or two words that say what kind of thing this is.',
+      image: o.image ?? null,
+      input: { placeholder: 'e.g. Sugar shack' },
+      buttons: [{ label: 'NEXT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (own.button !== 'save' || !own.text) return null;
+    head = own.text.slice(0, 30);
+    localStorage.setItem('tt-pin-heads', JSON.stringify([head, ...own0.filter((h) => h.toLowerCase() !== head.toLowerCase())].slice(0, 6)));
+  }
+  const said = await ask({
+    title: head,
+    body: `Add a short description under "${head}", or leave it empty.`,
+    image: o.image ?? null,
+    input: { value: o.desc ?? '', placeholder: head === 'Trailhead' ? 'e.g. Trespassing sign' : 'e.g. By the old fence' },
+    buttons: [{ label: o.photo ? 'SAVE PHOTO' : 'SAVE PIN', value: 'save', cls: 'info' }],
+  });
+  return { head, desc: said.button === 'save' ? said.text.slice(0, 60) : (o.desc ?? '') };
+}
+/** The one-line name used on the map and in exports: "Trailhead - Trespassing sign". */
+const pinName = (head, desc) => (desc ? `${head} - ${desc}` : head);
+
 async function dropPin() {
   const spot = spotNow();
   if (!spot) return;
   const { fix, fresh } = spot;
-  // The position is taken now; naming it can wait until you have stopped.
+  // The position is taken now; saying what it is can wait until you have stopped.
   const pin = {
     id: Date.now(), ride: state.current?.id ?? null, name: '', by: settings.userName,
     lat: fix.lat, lon: fix.lon, alt: fix.alt, acc: fix.acc, t: Date.now(),
   };
-  const res = await ask({
-    title: 'Name this pin',
-    body: fresh ? `Position locked (±${Math.round(fix.acc)} m). Type a name, or tap a quick label, then SAVE PIN.`
-      : `GPS is weak right now (±${Math.round(fix.acc)} m), so this pin may be off. Type a name, or tap a quick label, then SAVE PIN.`,
-    input: { placeholder: 'Type a name, e.g. House' },
-    chips: pinLabels(),
-    focus: false,
-    buttons: [{ label: 'SAVE PIN', value: 'save', cls: 'info' }, { label: 'Cancel', value: 'cancel' }],
+  const said = await describePin({
+    where: fresh ? `Position locked (±${Math.round(fix.acc)} m).` : `GPS is weak right now (±${Math.round(fix.acc)} m), so this pin may be off.`,
   });
-  if (res.button !== 'save') return;
-  pin.name = res.text.slice(0, 60) || `Pin ${state.pins.length + 1}`;
-  rememberPinLabel(pin.name);
+  if (!said) return;
+  Object.assign(pin, { head: said.head, desc: said.desc, name: pinName(said.head, said.desc) });
   await db.put('pins', pin);
   state.pins.push(pin);
   rideMap.setPins(state.pins);
+  if (state.view === 'net') renderRides();
   toast(`Pin saved: ${pin.name}`);
 }
 
@@ -1099,24 +1146,22 @@ $('photo-input').addEventListener('change', async (e) => {
       image: preview,
       buttons: [{ label: 'YES, FOUND IT', value: 'save', cls: 'go' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
     })
-    : await ask({
-      title: 'Name this photo',
-      body: spot.fresh ? `Pinned where you took it (±${Math.round(spot.fix.acc)} m).`
-        : `Pinned where you took it, but GPS was weak (±${Math.round(spot.fix.acc)} m), so the spot may be off.`,
-      image: preview,
-      input: { placeholder: 'e.g. Washout by the creek' },
-      chips: photoLabels(),
-      focus: false,
-      buttons: [{ label: 'SAVE PHOTO', value: 'save', cls: 'info' }, { label: 'Throw it away', value: 'discard', cls: 'stop' }],
-    });
+    : null;
+  // Any other photo: a heading, then a few words under it (see describePin).
+  const said = quarry ? null : await describePin({
+    photo: true, image: preview,
+    where: spot.fresh ? `Pinned where you took it (±${Math.round(spot.fix.acc)} m).`
+      : `Pinned where you took it, but GPS was weak (±${Math.round(spot.fix.acc)} m), so the spot may be off.`,
+  });
   URL.revokeObjectURL(preview);
-  if (res.button === 'discard') return;
+  if (res?.button === 'discard' || said === 'discard') return;
   // Backing out of the question keeps the photo, under a plain name: it cannot be retaken.
   const pin = {
-    id: Date.now(), ride: spot.ride, name: quarry?.name ?? (res.text.slice(0, 60) || `Photo ${n}`), by: settings.userName,
+    id: Date.now(), ride: spot.ride, name: quarry?.name ?? (said ? pinName(said.head, said.desc) : `Photo ${n}`), by: settings.userName,
     lat: spot.fix.lat, lon: spot.fix.lon, alt: spot.fix.alt, acc: spot.fix.acc, t: spot.t,
     photo: true, thumb: picture.thumb,
   };
+  if (said) Object.assign(pin, { head: said.head, desc: said.desc });
   try {
     await db.put('photos', { id: pin.id, type: picture.blob.type, data: await picture.blob.arrayBuffer() });
     await db.put('pins', pin);
@@ -1125,9 +1170,8 @@ $('photo-input').addEventListener('change', async (e) => {
     return;
   }
   state.pins.push(pin);
-  if (res.text) rememberPinLabel(pin.name);
   rideMap.setPins(state.pins);
-  if (state.view === 'rides') renderRides();
+  if (state.view === 'net') renderRides();
   if (quarry) markFound(quarry, { pin: pin.id });
   else toast(`Photo saved: ${pin.name}`);
 });
@@ -1310,7 +1354,7 @@ function renderRides() {
     li.dataset.id = p.id;
     li.innerHTML = `
       ${p.photo ? `<img class="thumb" src="${esc(p.thumb ?? '')}" alt="" data-act="view">` : '<div class="pinmark"></div>'}
-      <div><div class="name">${esc(p.name)}</div>
+      <div><div class="name">${esc(p.head ?? p.name)}</div>${p.head && p.desc ? `<div class="desc">${esc(p.desc)}</div>` : ''}
         <div class="meta"><b>${esc(byName(p))}</b> · ${fmtDate(p.t)} · ±${Math.round(p.acc)} m${ride ? ` · ${esc(rideName(ride))}` : ''}</div></div>
       <div class="acts">${p.photo ? '<button data-act="view">View</button>' : ''}<button data-act="rename">Rename</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
@@ -1339,6 +1383,7 @@ $('ride-list').addEventListener('click', async (e) => {
   } else if (act === 'show') {
     state.focusRide = ride.id;
     showView('net');
+    $('view-net').querySelector('.panel').scrollTop = 0; // the map is at the top of this same screen
     return;
   } else if (act === 'delete') {
     const res = await ask({
@@ -1366,10 +1411,15 @@ $('pin-list').addEventListener('click', async (e) => {
     return;
   }
   if (act === 'rename') {
-    const res = await ask({ title: pin.photo ? 'Rename photo' : 'Rename pin', input: { value: pin.name, placeholder: 'Type a name, e.g. House' }, chips: pin.photo ? photoLabels() : pinLabels(), buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }] });
-    if (res.button !== 'save' || !res.text) return;
-    pin.name = res.text.slice(0, 60);
-    rememberPinLabel(pin.name);
+    // Heading first, then the description. An older pin has only a name: "Heading - words" is split, anything else becomes the description.
+    const old = /^(.{1,30}?) - (.+)$/.exec(pin.name);
+    const head = pin.head ?? old?.[1] ?? ([...PIN_LABELS, ...PHOTO_LABELS].includes(pin.name) ? pin.name : null);
+    const said = await describePin({
+      rename: true, photo: !!pin.photo, image: pin.photo ? pin.thumb : null,
+      head, desc: pin.desc ?? old?.[2] ?? (head ? '' : pin.name),
+    });
+    if (!said || said === 'discard') return;
+    Object.assign(pin, { head: said.head, desc: said.desc, name: pinName(said.head, said.desc) });
     await db.put('pins', pin);
   } else if (act === 'delete') {
     const res = await ask({
@@ -1720,7 +1770,7 @@ async function setUserName(name) {
   }
   state.network = null;
   renderSettings();
-  if (state.view === 'rides') renderRides();
+  if (state.view === 'net') renderRides();
   if (state.view === 'net') renderNetwork(false);
 }
 
@@ -2814,7 +2864,7 @@ async function runSync(manual = false) {
       await loadAll();
       state.network = null;
       refreshRideMap();
-      if (state.view === 'rides') renderRides();
+      if (state.view === 'net') renderRides();
       if (state.view === 'net') renderNetwork(false);
       if (state.view === 'settings') renderSettings();
     }
@@ -3188,9 +3238,10 @@ if (IOS) {
 function showView(view) {
   if (view !== 'net') state.focusRide = null;
   state.view = view;
-  for (const v of ['ride', 'rides', 'net', 'hunt', 'settings']) $(`view-${v}`).hidden = v !== view;
+  if (view === 'rides') view = state.view = 'net'; // the Saved screen is part of Merge & export since 1.39
+  for (const v of ['ride', 'net', 'hunt', 'settings']) $(`view-${v}`).hidden = v !== view;
   for (const b of $('tabs').children) b.classList.toggle('active', b.dataset.view === view);
-  if (view === 'rides') renderRides();
+  if (view === 'net') renderRides();
   if (view === 'hunt') {
     if (game?.status === 'active' && tracker?.geo && !state.gpsWanted) startGps(); // a hunt needs to know where you are
     renderHunt();

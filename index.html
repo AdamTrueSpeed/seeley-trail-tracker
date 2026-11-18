@@ -68,23 +68,6 @@
     <input type="file" id="photo-input" accept="image/*" capture="environment" hidden>
   </section>
 
-  <!-- ===== Saved rides ===== -->
-  <section class="view page" id="view-rides" hidden>
-    <div id="totals" hidden>
-      <h1>Distance and time travelled</h1>
-      <ul id="totals-list" class="coverage card"></ul>
-    </div>
-    <div class="btnrow"><button id="btn-send-map" class="mid">Send rides to my map</button></div>
-    <p class="hint">Sends every saved ride and pin to the computer that keeps your trail map. It needs a send link from that computer first.</p>
-    <h1>Saved walks and rides</h1>
-    <p class="hint">Switch one off to leave it out of the trail network.</p>
-    <ul id="ride-list" class="list"></ul>
-    <p id="ride-empty" class="empty">Nothing saved yet. Go to <b>Record</b> and press START.</p>
-    <h1>Waypoints</h1>
-    <ul id="pin-list" class="list"></ul>
-    <p id="pin-empty" class="empty">No pins dropped yet.</p>
-  </section>
-
   <!-- ===== Merge & export ===== -->
   <section class="view" id="view-net" hidden>
     <div class="mapwrap short">
@@ -128,6 +111,27 @@
           <button id="btn-sync-off" class="mid ghost" hidden>Turn off</button>
         </div>
         <label class="toggle" id="auto-upload-wrap" hidden><span>Upload every finished walk by itself<small>Off: you are asked after each walk or ride.</small></span><input type="checkbox" id="auto-upload"></label>
+      </details>
+      <!-- Saved walks, rides, pins and photos. They had a tab of their own ("Saved") until 1.39. -->
+      <details id="rides-details" open>
+        <summary>Your walks and rides</summary>
+        <p class="hint">Tap one for its summary. Switch one off to leave it out of the trail network.</p>
+        <ul id="ride-list" class="list"></ul>
+        <p id="ride-empty" class="empty">Nothing saved yet. Go to <b>Record</b> and press START.</p>
+      </details>
+      <details id="pins-details">
+        <summary>Pins and photos</summary>
+        <ul id="pin-list" class="list"></ul>
+        <p id="pin-empty" class="empty">No pins dropped yet.</p>
+      </details>
+      <details id="totals" hidden>
+        <summary>Distance and time travelled</summary>
+        <ul id="totals-list" class="coverage"></ul>
+      </details>
+      <details id="send-details">
+        <summary>Send to the map computer</summary>
+        <div class="btnrow"><button id="btn-send-map" class="mid">Send rides to my map</button></div>
+        <p class="hint">Sends every saved ride and pin to the computer that keeps your trail map. It needs a send link from that computer first.</p>
       </details>
       <details id="coverage" hidden>
         <summary>Old-map trails ridden so far</summary>
@@ -279,7 +283,6 @@
 
 <nav class="tabs" id="tabs">
   <button data-view="ride" class="active">Record</button>
-  <button data-view="rides">Saved</button>
   <button data-view="net">Merge &amp; export</button>
   <button data-view="hunt">Play</button>
   <button data-view="settings">Settings</button>

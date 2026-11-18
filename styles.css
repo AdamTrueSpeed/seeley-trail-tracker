@@ -193,6 +193,7 @@ h1 { font-size: 20px; margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 2p
 .list li.off { opacity: .55; }
 .list .name { font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
 .list .meta { color: var(--muted); font-size: 14px; font-weight: 600; }
+.list .desc { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; } /* a pin's description, under its heading */
 .list .acts { grid-column: 1 / -1; display: flex; gap: 8px; }
 .list .acts button {
   flex: 1; min-height: 46px; border-radius: 10px;
