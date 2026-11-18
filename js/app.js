@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.40';
+const VERSION = '1.41';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '17'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -142,7 +142,16 @@ function methodOf(ride) {
 /** What one outing by this method is called: "walk", "run", "jog", or "ride" for anything you sit on or in. */
 const nounOf = (ride) => methodOf(ride).noun ?? 'ride';
 const capital = (s) => s[0].toUpperCase() + s.slice(1);
-const setMethod = (ride, m) => Object.assign(ride, { vehicle: m.key, vehicleName: m.name, vehicleWidth: m.width, vehicleKind: m.kind });
+/** `seat` ('driver' or 'passenger') is kept only for a method with two seats side by side (see `seats` in width.js). */
+const setMethod = (ride, m, seat) => {
+  Object.assign(ride, { vehicle: m.key, vehicleName: m.name, vehicleWidth: m.width, vehicleKind: m.kind });
+  if (m.seats && seat) ride.seat = seat;
+  else delete ride.seat;
+  return ride;
+};
+const SEATS = { driver: 'Driver seat', passenger: 'Passenger seat' };
+/** " (passenger seat)" for a side-by-side outing that knows its seat, otherwise "". */
+const seatText = (ride) => (SEATS[ride?.seat] ? ` (${SEATS[ride.seat].toLowerCase()})` : '');
 
 /** "1.5", "150 cm", "60 in", "5 ft" -> metres (null if it makes no sense). A bare number over 4 is taken as inches. */
 function parseWidth(text) {
@@ -741,6 +750,23 @@ async function chooseVehicle(title, current) {
   return allMethods().find((v) => v.key === res.button) ?? null;
 }
 
+/**
+ * In a side-by-side, which seat the phone rides on. The phone is off the
+ * vehicle's middle, and the trail map allows for it. Resolves with 'driver',
+ * 'passenger', or null if cancelled.
+ */
+async function chooseSeat(method, current) {
+  const res = await ask({
+    title: 'Which seat is the phone on?',
+    body: `In the ${method.short}, the phone sits to one side of the middle. The map allows for it.`,
+    buttons: [
+      ...Object.entries(SEATS).map(([value, label]) => ({ label, value, cls: value === current ? 'go' : 'ghost' })),
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  return SEATS[res.button] ? res.button : null;
+}
+
 /** Three quick questions (name, width, how it moves) to add a method of travel. Resolves with it, or null. */
 async function addMethod() {
   const next = [{ label: 'NEXT', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }];
@@ -896,15 +922,20 @@ async function beginRide() {
   if (!tracker.geo) { toast('This browser cannot use GPS.'); return; }
   if (starting || state.current) return;
   starting = true;
-  let vehicle;
+  let vehicle, seat = null;
   try {
     if (!(await discloseLocation())) return;
     vehicle = await chooseVehicle('How are you travelling?', settings.vehicle);
+    if (vehicle?.seats) {
+      seat = await chooseSeat(vehicle, settings.seat);
+      if (!seat) return;
+    }
   } finally {
     starting = false;
   }
   if (!vehicle) return;
   settings.vehicle = vehicle.key;
+  if (seat) settings.seat = seat;
   saveSettings();
   // Far from every trail system this phone knows? Then ask what this outing belongs to (see whichSystem).
   const here = Date.now() - state.fixAt < 60000 ? (tracker.good ?? tracker.lastFix) : null;
@@ -913,7 +944,7 @@ async function beginRide() {
   const ride = setMethod({
     id: Date.now(), name: '', by: settings.userName,
     startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0,
-  }, vehicle);
+  }, vehicle, seat);
   if (where?.system) Object.assign(ride, { system: where.system, place: where.place });
   else if (!here) ride.placeLate = true; // no position yet: asked at the first recorded point
   startActivity(ride); // straight after the tap: an iPhone only lets the motion sensor be asked for then
@@ -1014,7 +1045,7 @@ async function finishRide() {
     })
     : await ask({
       title: `Save this ${noun}`,
-      body: `${fmtDist(tracker.dist)} in ${fmtClock(timeOf(ride))} · ${methodOf(ride).name} · ${effort}. Give it a name, such as the trail or loop you covered.`,
+      body: `${fmtDist(tracker.dist)} in ${fmtClock(timeOf(ride))} · ${methodOf(ride).name}${seatText(ride)} · ${effort}. Give it a name, such as the trail or loop you covered.`,
       input: { value: `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
       buttons: [
         { label: `SAVE ${noun.toUpperCase()}`, value: 'save', cls: 'go' },
@@ -1427,7 +1458,7 @@ function renderRides() {
     li.innerHTML = `
       <label class="switch"><input type="checkbox" data-act="include" ${r.include ? 'checked' : ''} aria-label="Use this ride in the trail network"><span></span></label>
       <div data-act="report"><div class="name">${esc(r.name)}</div>
-        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short)} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(timeOf(r))} · ${
+        <div class="meta"><b>${esc(byName(r))}</b> · ${esc(methodOf(r).short + seatText(r))} · ${fmtDate(r.startedAt)} · ${fmtDist(r.dist)} · ${fmtDur(timeOf(r))} · ${
   [stepsText(r), fmtKcal(kcalOf(r)), elevOf(r) ? `↕ ${Math.round(elevOf(r).diff)} m` : ''].filter(Boolean).join(' · ')}</div></div>
       <div class="acts five"><button data-act="report">Report</button><button data-act="rename">Rename</button><button data-act="vehicle">Method</button><button data-act="show">Show on map</button><button data-act="delete" class="del">Delete</button></div>`;
     return li;
@@ -1478,7 +1509,9 @@ $('ride-list').addEventListener('click', async (e) => {
   } else if (act === 'vehicle') {
     const vehicle = await chooseVehicle(`What was "${ride.name}" on?`, methodOf(ride).key);
     if (!vehicle) return;
-    setMethod(ride, vehicle);
+    const seat = vehicle.seats ? await chooseSeat(vehicle, ride.seat ?? settings.seat) : null;
+    if (vehicle.seats && !seat) return;
+    setMethod(ride, vehicle, seat);
   } else if (act === 'show') {
     state.focusRide = ride.id;
     showView('net');

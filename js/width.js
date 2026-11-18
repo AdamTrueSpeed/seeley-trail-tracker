@@ -26,7 +26,8 @@ export const VEHICLES = [
   { key: 'horse', name: 'Horseback', short: 'Horseback', width: 0.8, kind: 'bike', basis: 'a horse and rider, about 31 in' },
   { key: 'grizzly', name: 'Yamaha Grizzly', short: 'Grizzly', width: GRIZZLY_WIDTH, kind: 'motor', basis: '48.4 in' },
   // effort 'drive': you sit in it rather than straddle it, which burns less (see activity.js)
-  { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', effort: 'drive', basis: '66.1 in' },
+  // seats: two seats side by side, so START asks which one the phone is on (ride.seat); the trail map allows for it
+  { key: 'rmax', name: 'Yamaha RMAX side-by-side', short: 'RMAX', width: 1.68, kind: 'motor', effort: 'drive', basis: '66.1 in', seats: true },
   { key: 'renegade', name: 'Can-Am Renegade', short: 'Renegade', width: 1.22, kind: 'motor', basis: '48 in' },
   { key: 'outlander', name: 'Can-Am Outlander 650', short: 'Outlander', width: 1.17, kind: 'motor', basis: '46 in' },
   { key: 'mower', name: 'Lawnmower', short: 'Lawnmower', width: 1.55, kind: 'motor', effort: 'drive', basis: 'ride-on mower with a 61 in deck' },
