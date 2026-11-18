@@ -115,6 +115,20 @@
       </div>
       <button id="btn-export" class="big go">EXPORT TO GOOGLE EARTH (.KML)</button>
       <button id="btn-share" class="big ghost" hidden>SHARE THE FILE…</button>
+      <!-- Cloud sync lives here, with the other ways of getting walks off the phone (it was in Settings until 1.38). -->
+      <details id="cloud-details" open>
+        <summary>Cloud sync</summary>
+        <p class="hint" id="sync-info"></p>
+        <div class="btnrow">
+          <button id="btn-sync-on" class="mid">Turn on cloud sync</button>
+          <button id="btn-sync-join" class="mid ghost">Join with a code</button>
+          <button id="btn-sync-now" class="mid" hidden>Sync now</button>
+          <button id="btn-sync-add" class="mid" hidden>Add another phone or computer</button>
+          <button id="btn-sync-move" class="mid" hidden>Move to the app's new address</button>
+          <button id="btn-sync-off" class="mid ghost" hidden>Turn off</button>
+        </div>
+        <label class="toggle" id="auto-upload-wrap" hidden><span>Upload every finished walk by itself<small>Off: you are asked after each walk or ride.</small></span><input type="checkbox" id="auto-upload"></label>
+      </details>
       <details id="coverage" hidden>
         <summary>Old-map trails ridden so far</summary>
         <ul id="coverage-list" class="coverage"></ul>
@@ -151,17 +165,6 @@
 
   <!-- ===== Settings ===== -->
   <section class="view page" id="view-settings" hidden>
-    <h1>Cloud sync</h1>
-    <p class="hint" id="sync-info"></p>
-    <div class="btnrow">
-      <button id="btn-sync-on" class="mid">Turn on cloud sync</button>
-      <button id="btn-sync-join" class="mid ghost">Join with a code</button>
-      <button id="btn-sync-now" class="mid" hidden>Sync now</button>
-      <button id="btn-sync-add" class="mid" hidden>Add another phone or computer</button>
-      <button id="btn-sync-move" class="mid" hidden>Move to the app's new address</button>
-      <button id="btn-sync-off" class="mid ghost" hidden>Turn off</button>
-    </div>
-
     <h1>You</h1>
     <div class="toggle">
       <img id="avatar-img" class="avatar" alt="">

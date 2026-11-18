@@ -20,10 +20,10 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.37';
+const VERSION = '1.38';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const REF_VERSION = '15'; // raise whenever reference.kml changes, so phones pick up the corrected map
+const REF_VERSION = '16'; // raise whenever reference.kml changes, so phones pick up the corrected map
 const SHARE_URL ='https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
@@ -336,30 +336,70 @@ async function showReport(ride, dare = false, saved = false) {
  * very summary screen was holding up, so it often had to be done by hand.)
  */
 async function offerSync(ride) {
-  if (!cloud.code) return; // cloud sync is not turned on: nothing to offer
-  const noun = nounOf(ride);
+  const noun = nounOf(ride), here = NATIVE ? 'phone' : 'device';
+  const ok = [{ label: 'OK', value: 'cancel', cls: 'go' }];
   if (!navigator.onLine) {
     await ask({
-      title: 'No signal right now',
-      body: `Your ${noun} is safe on this ${NATIVE ? 'phone' : 'device'}. It will go to the cloud by itself the next time the app is open with a signal.`,
-      buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }],
+      title: 'Stored on your ' + here,
+      body: `Right now, this ${noun} is stored on your ${here} only, and there is no signal to upload it. `
+        + (cloud.code ? 'It will go to the cloud by itself the next time the app is open with a signal.'
+          : 'To keep a copy in the cloud, turn on cloud sync under Merge & export when you have a signal.'),
+      buttons: ok,
     });
     return;
   }
+  // Chosen "always": no question, it just goes (and says so). Changed under Merge & export > Cloud sync.
+  if (cloud.code && settings.autoUpload) {
+    toast('Uploading to the cloud…', 20000);
+    await runSync(true);
+    if (cloud.error) {
+      await ask({
+        title: 'The upload did not get through',
+        body: `Your ${noun} is still safe on this ${here}. The app will keep trying by itself (${cloud.error}).`,
+        buttons: ok,
+      });
+    } else toast(`✓ Uploaded: your ${noun} is now in the cloud as well as on this ${here}.`, 6000);
+    return;
+  }
+  // Otherwise asked every time, whether or not cloud sync is on yet (the owner, 2026-11-18: with sync off nothing was asked at all).
   const res = await ask({
-    title: 'Sync with the cloud now?',
-    body: `This sends your ${noun} to your cloud copy, so your other devices and the trail map get it.`,
-    buttons: [{ label: 'SYNC NOW', value: 'save', cls: 'go' }, { label: 'Later', value: 'cancel' }],
+    title: 'Upload to the cloud?',
+    body: `Right now, this ${noun} is stored on your ${here} only. Would you like to upload it to the cloud?`
+      + (cloud.code ? '' : `\n\nCloud sync is not turned on yet on this ${here}. Uploading turns it on.`)
+      + '\n\nALWAYS UPLOAD does this by itself after every walk or ride from now on. You can switch that off again under Merge & export > Cloud sync.',
+    buttons: [{ label: 'UPLOAD NOW', value: 'save', cls: 'go' }, { label: 'ALWAYS UPLOAD', value: 'always', cls: 'info' }, { label: 'Not now', value: 'cancel' }],
   });
-  if (res.button !== 'save') { toast('Not synced yet. It will sync by itself later, or use Settings > Cloud sync > Sync now.', 6000); return; }
-  toast('Syncing…', 20000);
-  await runSync(true);
+  if (res.button === 'always') {
+    settings.autoUpload = true;
+    saveSettings();
+    res.button = 'save';
+  }
+  if (res.button !== 'save') {
+    toast(cloud.code ? 'Not uploaded yet. It will upload by itself later, or use Merge & export > Cloud sync > Sync now.'
+      : `Kept on your ${here} only. You can turn on cloud sync any time under Merge & export.`, 6000);
+    return;
+  }
+  if (!cloud.code) {
+    // First time on this device: a new cloud copy, or the one the family already has. Joining keeps everything together.
+    const how = await ask({
+      title: 'Are your walks already in the cloud?',
+      body: 'If you already use cloud sync on another phone, a computer or the web version, choose I HAVE A CODE so everything stays together. '
+        + 'You get the code there under Merge & export > Cloud sync > Add another phone or computer.\n\nIf this is your first time, choose START NEW.',
+      buttons: [{ label: 'I HAVE A CODE', value: 'join', cls: 'go' }, { label: 'START NEW', value: 'save' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (how.button === 'join') await joinSync();
+    else if (how.button === 'save') await useSyncCode(cleanSyncCode(localStorage.getItem('tt-sync-code-last')) ?? newSyncCode());
+    if (!cloud.code) { toast(`Kept on your ${here} only. You can turn on cloud sync any time under Merge & export.`, 6000); return; }
+  } else {
+    toast('Uploading…', 20000);
+    await runSync(true);
+  }
   await ask({
-    title: cloud.error ? 'The sync did not get through' : 'Synced with the cloud',
+    title: cloud.error ? 'The upload did not get through' : 'Uploaded to the cloud',
     body: cloud.error
-      ? `Your ${noun} is still safe on this ${NATIVE ? 'phone' : 'device'}. The app will keep trying by itself (${cloud.error}).`
-      : `✓ Your ${noun} is now in the cloud as well as on this ${NATIVE ? 'phone' : 'device'}.`,
-    buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }],
+      ? `Your ${noun} is still safe on this ${here}. The app will keep trying by itself (${cloud.error}).`
+      : `✓ Your ${noun} is now in the cloud as well as on this ${here}.`,
+    buttons: ok,
   });
 }
 
@@ -2705,7 +2745,15 @@ function renderCloud() {
   for (const id of ['btn-sync-on', 'btn-sync-join']) $(id).hidden = on;
   for (const id of ['btn-sync-add', 'btn-sync-now', 'btn-sync-off']) $(id).hidden = !on;
   $('btn-sync-move').hidden = !on || !OLD_HOME;
+  $('auto-upload-wrap').hidden = !on;
+  $('auto-upload').checked = !!settings.autoUpload;
 }
+// "Upload every finished walk by itself": on, a finished outing goes to the cloud without the question being asked.
+$('auto-upload').addEventListener('change', (e) => {
+  settings.autoUpload = e.target.checked;
+  saveSettings();
+  toast(settings.autoUpload ? 'Each walk or ride will upload by itself when you finish it.' : 'You will be asked after each walk or ride.', 5000);
+});
 
 // The app used to live on GitHub. A phone still opening it from there keeps its
 // rides in that address's storage, so the way across is: sync them to the
@@ -2819,7 +2867,7 @@ async function joinSync(text = null, quiet = false) {
   if (text == null) {
     const res = await ask({
       title: 'Join your family\'s sync',
-      body: 'Paste the link or code from a phone or computer that already has cloud sync on (Settings > Cloud sync > Add another phone or computer).',
+      body: 'Paste the link or code from a phone or computer that already has cloud sync on (Merge & export > Cloud sync > Add another phone or computer).',
       input: { placeholder: 'Paste it here' },
       buttons: [{ label: 'JOIN', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
     });
@@ -2849,7 +2897,7 @@ $('btn-sync-add').addEventListener('click', async () => {
   if (res.button !== 'save') return;
   await shareMessage({
     title: 'Seeley Trail Tracker sync',
-    text: 'Open this on the other phone or computer to share the same rides. (If it opens outside the app, copy the link and use Settings > Cloud sync > Join with a code.)',
+    text: 'Open this on the other phone or computer to share the same rides. (If it opens outside the app, copy the link and use Merge & export > Cloud sync > Join with a code.)',
     url: `${SHARE_URL}#sync=${cloud.code}`,
   }, 'Copied. Paste it into a message to yourself.');
 });
@@ -3150,6 +3198,7 @@ function showView(view) {
     refreshChallenges();
   }
   if (view === 'settings') renderSettings();
+  if (view === 'net') renderCloud(); // Cloud sync is on the Merge & export screen
   if (view === 'net') {
     renderSettings();
     renderNetwork(true);
