@@ -23,7 +23,7 @@ import {
 const VERSION = '1.40';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const REF_VERSION = '16'; // raise whenever reference.kml changes, so phones pick up the corrected map
+const REF_VERSION = '17'; // raise whenever reference.kml changes, so phones pick up the corrected map
 const SHARE_URL ='https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
