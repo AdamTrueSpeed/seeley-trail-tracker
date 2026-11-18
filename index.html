@@ -86,16 +86,6 @@
       </div>
       <div class="toggle sys"><span><small>Trail system</small><b id="sys-val"></b><small id="sys-note"></small></span><button id="btn-sys" class="mid ghost">Change</button></div>
       <div id="net-stats" class="netstats"></div>
-      <div class="slider">
-        <div class="row"><span>Merge distance</span><b id="thr-val"></b></div>
-        <input type="range" id="thr" min="3" max="20" step="1">
-        <small>Tracks closer together than this become one trail. Raise it if you still see double lines; lower it if two separate trails are being joined.</small>
-      </div>
-      <div class="slider">
-        <div class="row"><span>Smoothing</span><b id="smo-val"></b></div>
-        <input type="range" id="smo" min="0" max="10" step="1">
-        <small>Higher irons out GPS wobble and uses fewer points; lower keeps every bend.</small>
-      </div>
       <button id="btn-export" class="big go">EXPORT TO GOOGLE EARTH (.KML)</button>
       <button id="btn-share" class="big ghost" hidden>SHARE THE FILE…</button>
       <!-- Cloud sync lives here, with the other ways of getting walks off the phone (it was in Settings until 1.38). -->
@@ -249,6 +239,19 @@
       <button id="btn-ref-clear" class="mid ghost">Remove</button>
     </div>
     <input type="file" id="ref-file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden>
+
+    <h1>Merging tracks into trails</h1>
+    <p class="hint">How the walks and rides you record are combined into one trail network on the Merge &amp; export screen. Most people never need to change these.</p>
+    <div class="slider">
+      <div class="row"><span>Merge distance</span><b id="thr-val"></b></div>
+      <input type="range" id="thr" min="3" max="20" step="1">
+      <small>Tracks closer together than this become one trail. Raise it if you still see double lines; lower it if two separate trails are being joined.</small>
+    </div>
+    <div class="slider">
+      <div class="row"><span>Smoothing</span><b id="smo-val"></b></div>
+      <input type="range" id="smo" min="0" max="10" step="1">
+      <small>Higher irons out GPS wobble and uses fewer points; lower keeps every bend.</small>
+    </div>
 
     <h1>Google Earth export</h1>
     <label class="toggle"><span>Trail colour</span><select id="color"></select></label>

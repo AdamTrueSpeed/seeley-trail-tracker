@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.39';
+const VERSION = '1.40';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '16'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -790,6 +790,97 @@ async function addMethod() {
   return method;
 }
 
+// ---- which trail system an outing belongs to -----------------------------------------
+//
+// The app grew up on one property, so every outing went into one trail network. An
+// outing started well away from every trail system the phone knows (5 km) is asked
+// about: another system already known, a new trail system, a new urban walk, a park,
+// or a one-off. It is filed under that name (ride.system, ride.place) and is merged
+// and exported with its own system, not with the home trails. Outings with no
+// `system` belong to the home system.
+const AWAY_KM = 5;
+const PLACES = { trail: 'trail system', urban: 'urban walk', park: 'park or public trail', oneoff: 'one-off outings' };
+const ONE_OFF = 'One-off outings';
+const homeName = () => settings.systemName || suggestSystemName();
+
+/** The middle of the home trails: of the loaded map, or else where the first home outing began. */
+function homeSpot() {
+  const pts = state.ref ? state.ref.lines.flatMap((l) => l.parts.flat()) : [];
+  if (pts.length) return { lat: pts.reduce((a, p) => a + p[0], 0) / pts.length, lon: pts.reduce((a, p) => a + p[1], 0) / pts.length };
+  const first = doneRides().find((r) => !r.system && state.tracks.get(r.id)?.[0]?.[0]);
+  const p = first && state.tracks.get(first.id)[0][0];
+  return p ? { lat: p.lat, lon: p.lon } : null;
+}
+
+/** Every system this phone knows: home first, then each one named on a saved outing (placed where its first outing began). */
+function knownSystems() {
+  const out = [{ name: homeName(), place: 'trail', home: true, ...(homeSpot() ?? {}) }];
+  for (const r of doneRides()) {
+    if (!r.system || out.some((s) => s.name === r.system)) continue;
+    const p = state.tracks.get(r.id)?.[0]?.[0];
+    out.push({ name: r.system, place: r.place ?? 'trail', lat: p?.lat, lon: p?.lon });
+  }
+  return out;
+}
+
+/** The system being looked at on the Merge & export screen: null means home. */
+const activeSystem = () => (settings.viewSystem && knownSystems().some((s) => !s.home && s.name === settings.viewSystem) ? settings.viewSystem : null);
+const inActiveSystem = (ride) => (ride.system ?? null) === activeSystem();
+
+/**
+ * Decide what an outing starting at `spot` belongs to.
+ * @param late true when asked after recording has begun (no position was known at START): then there is no Cancel
+ * @returns {} for the home system, { system, place } for another, or 'cancel'
+ */
+async function whichSystem(spot, noun, late = false) {
+  const placed = knownSystems().filter((s) => s.lat != null)
+    .map((s) => ({ ...s, km: haversine(spot.lat, spot.lon, s.lat, s.lon) / 1000 })).sort((a, b) => a.km - b.km);
+  if (!placed.length) return {}; // nothing to be far from yet
+  const near = placed[0];
+  if (near.km <= AWAY_KM) return near.home ? {} : { system: near.name, place: near.place };
+  const others = knownSystems().filter((s) => !s.home && s.name !== ONE_OFF);
+  const res = await ask({
+    title: 'Where are you?',
+    body: `You are about ${Math.round(near.km)} km from ${near.name}, the nearest trails this app knows. What is this ${noun} part of?`,
+    buttons: [
+      ...others.map((s) => ({ label: s.name, value: `sys:${s.name}` })),
+      { label: 'NEW TRAIL SYSTEM', value: 'trail', cls: 'go' },
+      { label: 'NEW URBAN WALK', value: 'urban', cls: 'info' },
+      { label: 'NEW PARK OR PUBLIC TRAIL', value: 'park', cls: 'info' },
+      { label: 'Just a one-off, no name', value: 'oneoff' },
+      { label: `It is part of ${homeName()}`, value: 'home' },
+      ...(late ? [] : [{ label: 'Cancel', value: 'cancel' }]),
+    ],
+  });
+  if (res.button === 'home') return {};
+  if (res.button === 'cancel') return late ? { system: ONE_OFF, place: 'oneoff' } : 'cancel';
+  if (res.button === 'oneoff') return { system: ONE_OFF, place: 'oneoff' };
+  if (res.button.startsWith('sys:')) {
+    const s = others.find((o) => `sys:${o.name}` === res.button);
+    return { system: s.name, place: s.place };
+  }
+  const named = await ask({
+    title: `Name this ${PLACES[res.button]}`,
+    body: `Every ${noun} you file under this name is merged into its own map, separate from ${homeName()}.`,
+    input: { placeholder: res.button === 'urban' ? 'e.g. Merrickville village loop' : res.button === 'park' ? 'e.g. Limerick Forest' : 'e.g. Camp trails' },
+    buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: late ? 'Skip' : 'Cancel', value: 'cancel' }],
+  });
+  if (named.button !== 'save' || !named.text) return late ? { system: ONE_OFF, place: 'oneoff' } : 'cancel';
+  return { system: named.text.slice(0, 60), place: res.button };
+}
+
+/** No position was known at START: ask at the first recorded point instead (waiting for any other question to be answered first). */
+async function placeLate(ride, p) {
+  while ($('dlg').open) await new Promise((r) => setTimeout(r, 3000));
+  if (state.current !== ride) return;
+  const where = await whichSystem(p, nounOf(ride), true);
+  if (where.system) {
+    Object.assign(ride, { system: where.system, place: where.place });
+    await db.put('rides', ride);
+    toast(`Filed under ${where.system}`);
+  }
+}
+
 let starting = false;
 /** START. Whatever goes wrong is said on screen, and START can always be pressed again. */
 async function startRide() {
@@ -815,10 +906,16 @@ async function beginRide() {
   if (!vehicle) return;
   settings.vehicle = vehicle.key;
   saveSettings();
+  // Far from every trail system this phone knows? Then ask what this outing belongs to (see whichSystem).
+  const here = Date.now() - state.fixAt < 60000 ? (tracker.good ?? tracker.lastFix) : null;
+  const where = here ? await whichSystem(here, vehicle.noun ?? 'ride') : null;
+  if (where === 'cancel') return;
   const ride = setMethod({
     id: Date.now(), name: '', by: settings.userName,
     startedAt: Date.now(), endedAt: Date.now(), status: 'recording', include: true, dist: 0, count: 0,
   }, vehicle);
+  if (where?.system) Object.assign(ride, { system: where.system, place: where.place });
+  else if (!here) ride.placeLate = true; // no position yet: asked at the first recorded point
   startActivity(ride); // straight after the tap: an iPhone only lets the motion sensor be asked for then
   await db.put('rides', ride);
   state.rides.push(ride);
@@ -856,6 +953,7 @@ function onPoint(p, newSeg) {
   const ride = state.current;
   if (!ride) return;
   const segs = state.tracks.get(ride.id);
+  if (ride.placeLate) { delete ride.placeLate; placeLate(ride, p).catch(() => {}); }
   if (newSeg || !segs.length) segs.push([]);
   const seg = segs[segs.length - 1];
   const prev = seg[seg.length - 1];
@@ -1320,7 +1418,8 @@ async function recoverUnfinished() {
 // ---- saved rides screen -----------------------------------------------------
 
 function renderRides() {
-  const rides = doneRides().reverse();
+  const rides = doneRides().filter(inActiveSystem).reverse(); // the trail system being looked at (see activeSystem)
+  $('rides-details').querySelector('summary').textContent = knownSystems().length > 1 ? `Your walks and rides: ${systemName()}` : 'Your walks and rides';
   $('ride-list').replaceChildren(...rides.map((r) => {
     const li = document.createElement('li');
     li.dataset.id = r.id;
@@ -1442,7 +1541,7 @@ $('pin-list').addEventListener('click', async (e) => {
 
 function computeNetwork() {
   const tracks = state.rides
-    .filter((r) => r.include && state.tracks.get(r.id)?.length)
+    .filter((r) => r.include && inActiveSystem(r) && state.tracks.get(r.id)?.length) // one trail system at a time
     .map((r) => ({
       id: r.id, name: rideName(r), by: byName(r), dist: r.dist, startedAt: r.startedAt, segments: state.tracks.get(r.id),
       vehicle: methodOf(r), vehicleWidth: r.vehicleWidth ?? methodOf(r).width,
@@ -1486,26 +1585,58 @@ function suggestSystemName() {
   if (fromMap) return /trail/i.test(fromMap) ? fromMap : `${fromMap} Trail`;
   return settings.userName ? `${settings.userName}'s Trail` : 'My Trail';
 }
-const systemName = () => settings.systemName || suggestSystemName();
+/** The name of the system on screen: the home one, or another one picked on the Merge & export screen. */
+const systemName = () => activeSystem() ?? homeName();
 
 async function askSystemName() {
+  const away = activeSystem(); // renaming another system renames it on every outing filed under it
   const suggestion = suggestSystemName();
   const res = await ask({
     title: 'Name of the trail system',
     body: 'The whole network of trails. Each named stretch inside it is a branch.',
     input: { value: systemName(), placeholder: 'e.g. MacGregor Estates Trail' },
-    chips: suggestion !== systemName() ? [suggestion] : [],
+    chips: !away && suggestion !== systemName() ? [suggestion] : [],
     buttons: [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
   });
   if (res.button !== 'save' || !res.text) return false;
-  settings.systemName = res.text.slice(0, 60);
+  const name = res.text.slice(0, 60);
+  if (away) {
+    for (const r of state.rides.filter((x) => x.system === away)) { r.system = name; await db.put('rides', r); }
+    settings.viewSystem = name;
+    syncSoon();
+  } else {
+    settings.systemName = name;
+    prefsChanged();
+  }
   saveSettings();
-  prefsChanged();
   state.lastKml = null;
-  if (state.view === 'net') renderNetwork(false);
+  if (state.view === 'net') { renderRides(); renderNetwork(false); }
   return true;
 }
-$('btn-sys').addEventListener('click', askSystemName);
+/** "Change" beside the trail system: with more than one system, pick which one to look at; otherwise rename. */
+$('btn-sys').addEventListener('click', async () => {
+  const systems = knownSystems();
+  if (systems.length < 2) { await askSystemName(); return; }
+  const now = systemName();
+  const res = await ask({
+    title: 'Which trail system?',
+    body: 'The map, the list of walks and the export below show one system at a time.',
+    buttons: [
+      ...systems.map((s) => ({ label: `${s.name}${s.home ? '' : ` (${PLACES[s.place] ?? 'trail system'})`}`, value: `sys:${s.name}`, cls: s.name === now ? 'go' : 'ghost' })),
+      { label: `Rename "${now}"`, value: 'rename', cls: 'info' },
+      { label: 'Cancel', value: 'cancel' },
+    ],
+  });
+  if (res.button === 'rename') { await askSystemName(); return; }
+  if (!res.button.startsWith('sys:')) return;
+  const pick = systems.find((s) => `sys:${s.name}` === res.button);
+  settings.viewSystem = pick.home ? null : pick.name;
+  saveSettings();
+  state.network = null;
+  state.focusRide = state.focusSeg = null;
+  renderRides();
+  renderNetwork(true);
+});
 
 const branchIndexOf = (branches) => prepareReference({ lines: branches.map((b) => ({ name: b.name, parts: [b.pts], boundary: false })) });
 
@@ -1590,8 +1721,9 @@ function renderNetwork(fit) {
   netMap.setPins(state.pins);
 
   $('sys-val').textContent = systemName();
-  $('sys-note').textContent = settings.systemName ? 'Used as the name of the Google Earth file and map.'
-    : (state.ref ? 'Suggested from your existing map. Tap Change if it is not right.' : 'Suggested name. Tap Change to set your own.');
+  $('sys-note').textContent = knownSystems().length > 1 ? 'Showing this system only. Tap Change to look at another one.'
+    : settings.systemName ? 'Used as the name of the Google Earth file and map.'
+      : (state.ref ? 'Suggested from your existing map. Tap Change if it is not right.' : 'Suggested name. Tap Change to set your own.');
 
   const st = net.stats;
   $('net-stats').innerHTML = `
