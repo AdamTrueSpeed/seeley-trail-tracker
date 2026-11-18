@@ -62,6 +62,7 @@ export class Tracker {
       (pos) => this._onPosition(pos),
       (err) => {
         this.error = err.code === 1 ? 'denied' : 'unavailable';
+        this.errorText = String(err.message ?? ''); // the phone's own words, shown in the Android app
         this.on.status();
       },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 },

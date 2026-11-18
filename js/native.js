@@ -33,35 +33,63 @@ const known = new Map();
  * A stand-in for navigator.geolocation that keeps working with the screen off.
  * Only what tracker.js uses: watchPosition and clearWatch.
  */
-export function nativeGeo() {
+/**
+ * If the phone's background GPS cannot be started (anything but "location is
+ * blocked"), or does not answer within 8 seconds, the page's own GPS is used
+ * instead: the same one the web version uses, which works while the screen is
+ * on. So the app can always record, and `onNote(why)` lets it say what happened.
+ * The page's GPS is dropped again the moment the background one delivers.
+ */
+export function nativeGeo(onNote) {
   const watchers = new Map();
   let next = 1;
   return {
-    watchPosition(ok, fail) {
+    watchPosition(ok, fail, opts) {
       const id = next++;
-      watchers.set(id, use('BackgroundGeolocation', (geo) => geo.addWatcher({
+      const w = { native: null, web: null, timer: null, done: false };
+      watchers.set(id, w);
+      const fallBack = (why) => {
+        if (w.done || w.web != null) return;
+        if (!navigator.geolocation) { fail?.({ code: 2, message: why }); return; }
+        onNote?.(why);
+        w.web = navigator.geolocation.watchPosition(ok, fail, opts);
+      };
+      w.timer = setTimeout(() => fallBack('the phone did not answer'), 8000);
+      w.slow = setTimeout(() => fallBack('it has given no position yet'), 20000); // registered, but silent
+      w.native = use('BackgroundGeolocation', (geo) => geo.addWatcher({
         backgroundTitle: 'Seeley Trail Tracker',
         backgroundMessage: 'GPS is on. Tap to open the app.',
         requestPermissions: true,
         stale: false,
         distanceFilter: 0,
       }, (loc, err) => {
+        clearTimeout(w.slow);
         if (err) {
-          fail?.({ code: err.code === 'NOT_AUTHORIZED' ? 1 : 2, message: err.message ?? String(err.code) });
+          clearTimeout(w.timer);
+          const message = err.message ?? String(err.code);
+          if (err.code === 'NOT_AUTHORIZED') fail?.({ code: 1, message }); // blocked or switched off: only the user can change that
+          else fallBack(message);
           return;
         }
-        if (!loc) return;
+        if (!loc || w.done) return;
+        if (w.web != null) { navigator.geolocation.clearWatch(w.web); w.web = null; onNote?.(null); } // the real thing has arrived
         ok({
           timestamp: loc.time ?? Date.now(),
           coords: { latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy, altitude: loc.altitude ?? null, speed: loc.speed ?? null, heading: loc.bearing ?? null },
         });
-      })).catch((err) => { fail?.({ code: 2, message: String(err?.message ?? err) }); return null; }));
+      })).then((watcher) => { clearTimeout(w.timer); return watcher; })
+        .catch((err) => { clearTimeout(w.timer); fallBack(String(err?.message ?? err)); return null; });
       return id;
     },
     clearWatch(id) {
-      const pending = watchers.get(id);
+      const w = watchers.get(id);
+      if (!w) return;
       watchers.delete(id);
-      pending?.then((watcher) => (watcher != null ? use('BackgroundGeolocation', (geo) => geo.removeWatcher({ id: watcher })) : null)).catch(() => {});
+      w.done = true;
+      clearTimeout(w.timer);
+      clearTimeout(w.slow);
+      if (w.web != null) navigator.geolocation.clearWatch(w.web);
+      w.native?.then((watcher) => (watcher != null ? use('BackgroundGeolocation', (geo) => geo.removeWatcher({ id: watcher })) : null)).catch(() => {});
     },
   };
 }
