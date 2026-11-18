@@ -28,6 +28,8 @@ export function cleanSyncCode(text) {
 export const forgetSync = () => db.del('kv', 'sync');
 
 const POINT_FIELDS = ['seg', 'lat', 'lon', 'alt', 't', 'acc', 'spd', 'cond'];
+// The cloud's refusals that mean something to a person, in words for the screen.
+const REFUSED = { 429: 'the cloud is busy; it will carry on in a minute', 507: 'your family\'s cloud space is full' };
 
 /**
  * One full exchange with the cloud.
@@ -37,7 +39,7 @@ const POINT_FIELDS = ['seg', 'lat', 'lon', 'alt', 't', 'acc', 'spd', 'cond'];
 export async function syncNow(code, shared) {
   const call = async (path, init = {}) => {
     const res = await fetch(`${api()}/${path}`, { ...init, cache: 'no-store', headers: { Authorization: `Bearer ${code}`, ...(init.headers ?? {}) } });
-    if (!res.ok && res.status !== 404) throw new Error(`cloud ${res.status}`);
+    if (!res.ok && res.status !== 404) throw new Error(REFUSED[res.status] ?? `cloud ${res.status}`);
     return res;
   };
   const state = { cursor: 0, points: {}, photos: {}, kvAt: {}, ...((await db.get('kv', 'sync')) ?? {}) };

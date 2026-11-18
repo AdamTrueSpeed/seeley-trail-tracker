@@ -29,6 +29,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS photos (grp TEXT NOT NULL, id TEXT NOT NULL, type TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY (grp, id))`,
   // Challenges between friends (see the end of this file). They are not filed under a family: whoever holds a challenge's id is in it.
   `CREATE TABLE IF NOT EXISTS challenges (id TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS challenges_created ON challenges (created)`,
   `CREATE TABLE IF NOT EXISTS scores (challenge TEXT NOT NULL, player TEXT NOT NULL, day TEXT NOT NULL, name TEXT NOT NULL, team TEXT NOT NULL,
      dist REAL NOT NULL, ms INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (challenge, player, day))`,
   `CREATE TABLE IF NOT EXISTS invites (inbox TEXT NOT NULL, challenge TEXT NOT NULL, sender TEXT NOT NULL, title TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (inbox, challenge))`,
@@ -45,6 +46,38 @@ const CORS = {
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS } });
 const fail = (status, error) => json({ error }, status);
 
+// ---- limits, so that nobody can hammer the service or fill it up ------------------------
+//
+// Requests per internet address per minute are counted by Cloudflare ("ratelimits" in
+// wrangler.jsonc; approximate, counted per data centre): API_LIMIT for every /api request,
+// OPEN_LIMIT for the writes that need no family code (making challenges, posting scores,
+// sending invites). The other caps are kept here. Each can be lowered for the local tests
+// with `wrangler dev --var NAME:VALUE` (see tools/test-cloud.mjs).
+const FAMILY_BYTES = 250000000;      // all of one family's rides, pins and photos together
+const MAX_PLAYERS = 100;             // people in one challenge
+const NEW_CHALLENGES_A_DAY = 200;    // challenges made in 24 hours, by everybody together
+const limitsOf = (env) => ({
+  familyBytes: Number(env.FAMILY_BYTES) || FAMILY_BYTES,
+  players: Number(env.MAX_PLAYERS) || MAX_PLAYERS,
+  challengesADay: Number(env.NEW_CHALLENGES_A_DAY) || NEW_CHALLENGES_A_DAY,
+});
+/** True if this address has used up its requests for the minute. If the counter itself fails, the request goes ahead. */
+async function tooFast(limiter, key) {
+  if (!limiter) return false;
+  try { return !(await limiter.limit({ key })).success; } catch { return false; }
+}
+const busy = () => { const res = fail(429, 'too many requests; try again in a minute'); res.headers.set('Retry-After', '60'); return res; };
+const full = () => fail(507, 'the family\'s cloud space is full');
+
+/** What the family keeps in the cloud, in characters and bytes, leaving out the ride or photo about to be replaced. */
+async function stored(db, grp, except = {}) {
+  return (await db.prepare(`SELECT
+      (SELECT IFNULL(SUM(LENGTH(data)), 0) FROM items WHERE grp = ?1)
+    + (SELECT IFNULL(SUM(LENGTH(data)), 0) FROM points WHERE grp = ?1 AND ride IS NOT ?2)
+    + (SELECT IFNULL(SUM(LENGTH(data)), 0) FROM photos WHERE grp = ?1 AND id IS NOT ?3) AS used`)
+    .bind(grp, except.ride ?? null, except.photo ?? null).first()).used;
+}
+
 /** The family this request belongs to, from its sync code; null if it carries none worth the name. */
 async function groupOf(request) {
   const code = /^Bearer ([A-Z0-9]{20,40})$/.exec(request.headers.get('Authorization') ?? '')?.[1];
@@ -53,17 +86,21 @@ async function groupOf(request) {
   return [...hash].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function sync(db, grp, body) {
+async function sync(db, grp, body, cap) {
   const since = Number.isInteger(body?.since) && body.since >= 0 ? body.since : 0;
   const incoming = Array.isArray(body?.items) ? body.items : [];
   if (incoming.length > MAX_ITEMS) return fail(413, 'too many items in one request');
-  const clean = [];
+  let clean = [];
   for (const it of incoming) {
     const data = it?.deleted ? null : JSON.stringify(it?.data ?? null);
     if (!KINDS.has(it?.kind) || typeof it.id !== 'string' || !it.id || it.id.length > 80 || !Number.isFinite(it.updated)) return fail(400, 'bad item');
     if (data && data.length > MAX_ITEM) return fail(413, 'item too large');
     clean.push({ kind: it.kind, id: it.id, updated: Math.round(it.updated), deleted: it.deleted ? 1 : 0, data });
   }
+  // A full family can still delete things (that is how it makes room); nothing else it sends is kept.
+  const adding = clean.reduce((n, it) => n + (it.data?.length ?? 0), 0);
+  const room = !adding || (await stored(db, grp)) + adding <= cap;
+  if (!room) clean = clean.filter((it) => it.deleted);
   let seq;
   if (clean.length) {
     // One step forward for the family's change counter; every change in this request carries it.
@@ -79,6 +116,9 @@ async function sync(db, grp, body) {
         ? db.prepare('DELETE FROM points WHERE grp = ? AND ride = ? AND EXISTS (SELECT 1 FROM items WHERE grp = ?1 AND kind = \'ride\' AND id = ?2 AND deleted = 1)').bind(grp, it.id)
         : db.prepare('DELETE FROM photos WHERE grp = ? AND id = ? AND EXISTS (SELECT 1 FROM items WHERE grp = ?1 AND kind = \'pin\' AND id = ?2 AND deleted = 1)').bind(grp, it.id))));
     }
+    if (!room) return full();
+  } else if (!room) {
+    return full();
   } else {
     seq = (await db.prepare('SELECT seq FROM groups WHERE grp = ?').bind(grp).first())?.seq ?? 0;
   }
@@ -92,7 +132,7 @@ async function sync(db, grp, body) {
   });
 }
 
-async function points(db, grp, ride, request) {
+async function points(db, grp, ride, request, cap) {
   if (request.method === 'GET') {
     const rows = (await db.prepare('SELECT data FROM points WHERE grp = ? AND ride = ? ORDER BY part').bind(grp, ride).all()).results;
     if (!rows.length) return fail(404, 'no points for that ride yet');
@@ -100,6 +140,7 @@ async function points(db, grp, ride, request) {
   }
   const text = await request.text();
   if (!text.startsWith('[') || text.length > MAX_POINTS) return fail(413, 'points missing or too large');
+  if ((await stored(db, grp, { ride })) + text.length > cap) return full();
   const parts = [];
   for (let at = 0; at < text.length; at += PART) parts.push(text.slice(at, at + PART));
   await db.batch([
@@ -109,7 +150,7 @@ async function points(db, grp, ride, request) {
   return json({ ok: true, parts: parts.length });
 }
 
-async function photo(db, grp, id, request) {
+async function photo(db, grp, id, request, cap) {
   if (request.method === 'GET') {
     const row = await db.prepare('SELECT type, data FROM photos WHERE grp = ? AND id = ?').bind(grp, id).first();
     if (!row) return fail(404, 'no picture for that pin yet');
@@ -117,6 +158,7 @@ async function photo(db, grp, id, request) {
   }
   const data = await request.arrayBuffer();
   if (!data.byteLength || data.byteLength > MAX_PHOTO) return fail(413, 'picture missing or too large');
+  if ((await stored(db, grp, { photo: id })) + data.byteLength > cap) return full();
   const type = /^image\/[a-z0-9.+-]+$/.test(request.headers.get('Content-Type') ?? '') ? request.headers.get('Content-Type') : 'image/jpeg';
   await db.prepare('INSERT INTO photos (grp, id, type, data) VALUES (?, ?, ?, ?) ON CONFLICT (grp, id) DO UPDATE SET type = ?3, data = ?4').bind(grp, id, type, data).run();
   return json({ ok: true });
@@ -139,7 +181,7 @@ const KINDS_OF_CHALLENGE = new Set(['any', 'foot', 'wheels']);
 const INVITE_LIFE = 30 * 86400000;
 const short = (v, max) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
 
-async function challenge(db, id, sub, request) {
+async function challenge(db, id, sub, request, lim) {
   if (request.method === 'GET' && !sub) {
     const row = await db.prepare('SELECT data FROM challenges WHERE id = ?').bind(id).first();
     if (!row) return fail(404, 'no such challenge');
@@ -156,6 +198,9 @@ async function challenge(db, id, sub, request) {
       teams: teams.length > 1 ? teams : [], by: short(body?.by, 40),
     };
     if (!data.name || !KINDS_OF_CHALLENGE.has(data.kind) || !DAY.test(data.start ?? '')) return fail(400, 'bad challenge');
+    const made = await db.prepare('SELECT (SELECT COUNT(*) FROM challenges WHERE created > ?1) AS today, EXISTS (SELECT 1 FROM challenges WHERE id = ?2) AS known')
+      .bind(Date.now() - 86400000, id).first();
+    if (!made.known && made.today >= lim.challengesADay) return fail(429, 'too many new challenges today; try again tomorrow');
     await db.prepare('INSERT OR IGNORE INTO challenges (id, created, data) VALUES (?, ?, ?)').bind(id, Date.now(), JSON.stringify(data)).run();
     return json({ ok: true });
   }
@@ -167,6 +212,8 @@ async function challenge(db, id, sub, request) {
   const teams = JSON.parse(row.data).teams ?? [];
   const team = teams.includes(body?.team) ? body.team : '';
   const clean = days.filter((d) => DAY.test(d?.day ?? '') && Number.isFinite(d.dist) && d.dist >= 0 && d.dist < 2e6);
+  const seen = await db.prepare('SELECT COUNT(DISTINCT player) AS players, IFNULL(MAX(player = ?2), 0) AS me FROM scores WHERE challenge = ?1').bind(id, player).first();
+  if (!seen.me && seen.players >= lim.players) return fail(403, 'this challenge is full');
   if (clean.length) {
     await db.batch(clean.map((d) => db.prepare(
       `INSERT INTO scores (challenge, player, day, name, team, dist, ms, updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -203,24 +250,30 @@ export default {
     if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 });
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     try {
+      const address = request.headers.get('CF-Connecting-IP') ?? 'unknown';
+      if (await tooFast(env.API_LIMIT, address)) return busy();
+      const lim = limitsOf(env);
       const [, , kind, key, sub] = url.pathname.split('/');
       if (kind === 'challenge' || kind === 'invite' || kind === 'invites') {
+        if (request.method !== 'GET' && await tooFast(env.OPEN_LIMIT, address)) return busy();
         await prepare(env.DB);
         if (kind !== 'challenge') return await invites(env.DB, kind, key, request);
         if (!CHALLENGE_ID.test(key ?? '')) return fail(404, 'no such challenge');
-        return await challenge(env.DB, key, sub, request);
+        return await challenge(env.DB, key, sub, request, lim);
       }
       const grp = await groupOf(request);
       if (!grp) return fail(401, 'a sync code is needed');
       await prepare(env.DB);
       const [, , what, id] = url.pathname.split('/');
-      if (what === 'sync' && request.method === 'POST') return await sync(env.DB, grp, await request.json().catch(() => null));
+      if (what === 'sync' && request.method === 'POST') return await sync(env.DB, grp, await request.json().catch(() => null), lim.familyBytes);
       if ((what === 'points' || what === 'photo') && /^[A-Za-z0-9_-]{1,80}$/.test(id ?? '') && (request.method === 'GET' || request.method === 'PUT')) {
-        return await (what === 'points' ? points : photo)(env.DB, grp, id, request);
+        return await (what === 'points' ? points : photo)(env.DB, grp, id, request, lim.familyBytes);
       }
       return fail(404, 'no such address');
     } catch (err) {
-      return fail(500, String(err?.message ?? err));
+      // The detail stays here (visible with `npx wrangler tail`); the caller only learns that something went wrong.
+      console.error('api', request.method, url.pathname, err?.stack ?? String(err));
+      return fail(500, 'the cloud had a problem');
     }
   },
 };

@@ -7,5 +7,11 @@
   "assets": { "directory": "./", "binding": "ASSETS" },
   "d1_databases": [
     { "binding": "DB", "database_name": "seeley-trails", "database_id": "ff2e84a6-4dc2-42af-8e1f-d3bc6028d62c" }
+  ],
+  // Requests per internet address per minute (see the limits in worker/index.js).
+  // API_LIMIT: every /api request. OPEN_LIMIT: the writes that need no family code.
+  "ratelimits": [
+    { "name": "API_LIMIT", "namespace_id": "1001", "simple": { "limit": 300, "period": 60 } },
+    { "name": "OPEN_LIMIT", "namespace_id": "1002", "simple": { "limit": 30, "period": 60 } }
   ]
 }

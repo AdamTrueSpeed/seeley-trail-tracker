@@ -133,10 +133,12 @@ export function readChallengeLink(text) {
 
 // ---- the cloud ---------------------------------------------------------------------------
 
+// The cloud's refusals that mean something to a person, in words for the screen (`err.refused` is set on these).
+const REFUSED = { 403: 'That challenge is full.', 429: 'The cloud is busy. Try again in a few minutes.' };
 async function call(path, init = {}) {
   const res = await fetch(`${api()}/${path}`, { ...init, cache: 'no-store' });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`cloud ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(REFUSED[res.status] ?? `cloud ${res.status}`), { refused: res.status in REFUSED });
   return res.json();
 }
 const send = (method, body) => ({ method, body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } });

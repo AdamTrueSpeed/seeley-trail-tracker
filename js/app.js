@@ -2695,7 +2695,7 @@ async function newChallenge(quick = null) {
     }
   }
   const entry = { ch: { id: newChallengeId(), name: name.slice(0, 60), kind, start: today(), days, teams, by: myName() }, team, scores: [] };
-  try { await createChallenge(entry.ch); } catch { toast(NEEDS_SIGNAL, 5000); return null; }
+  try { await createChallenge(entry.ch); } catch (err) { toast(err.refused ? err.message : NEEDS_SIGNAL, 5000); return null; }
   chal.list.unshift(entry);
   saveChal();
   await refreshChallenge(entry).catch(() => {});
@@ -2728,7 +2728,7 @@ async function inviteTo(entry) {
       const title = dare ? `${dare.by} did a ${dareText(dare)} today. Can you beat that?` : `${myName()} invites you to "${ch.name}".`;
       await sendInvites(friends.map((f) => f.code), ch.id, myName(), title);
       toast(`Sent to ${friends.length === 1 ? 'your friend' : `${friends.length} friends`}. They see it when they next open the app.`, 6000);
-    } catch { toast(NEEDS_SIGNAL, 5000); }
+    } catch (err) { toast(err.refused ? err.message : NEEDS_SIGNAL, 5000); }
   } else if (res.button === 'link') {
     await shareMessage({ title: ch.name, text: `${pitch} Open this link to join in:`, url: challengeLink(SHARE_URL, ch.id, dare) }, 'Copied. Paste it into a message to your friends.');
   }

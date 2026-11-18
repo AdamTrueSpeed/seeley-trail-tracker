@@ -1,5 +1,8 @@
 // Checks the cloud API (worker/index.js) against a copy running on this computer.
-// Start that first, in another window:  npx wrangler dev --port 8787
+// Start that first, in another window, with the limits lowered so they can be reached:
+//   npx wrangler dev --port 8787 --var FAMILY_BYTES:6000000 --var MAX_PLAYERS:3
+// (the preview config "seeley-trail-tracker-cloud" does exactly that).
+// The last checks use up the minute's allowance of requests: wait a minute before running it again.
 // Usage: node tools/test-cloud.mjs [address, default http://localhost:8787]
 
 import { newTransferCode } from '../js/transfer.js';
@@ -76,6 +79,34 @@ check('cloud: its points and the deleted pin\'s photo are gone', (await call(fam
   const inv = (await (await api(`invites/${inbox}`)).json()).invites;
   check('challenge: the friend finds it, once', inv.length === 1 && inv[0].challenge === id && inv[0].from === 'Adam');
   check('challenge: a bad invitation is refused', (await api('invite', 'POST', { to: ['nobody'], challenge: id })).status === 400);
+
+  // ---- limits (MAX_PLAYERS is 3 in the local test cloud) ----
+  const fourth = await api(`challenge/${id}/score`, 'PUT', { player: 'phone-eeee', name: 'Eve', team: 'Red', days: [{ day, dist: 50, ms: 0 }] });
+  check('limits: a full challenge takes nobody new', fourth.status === 403, `status ${fourth.status}`);
+  check('limits: but someone already in it can still post', (await api(`challenge/${id}/score`, 'PUT', { player: 'phone-aaaa', name: 'Adam', team: 'Red', days: [{ day, dist: 5100, ms: 121000 }] })).ok);
+  const burst = [];
+  for (let i = 0; i < 35; i++) burst.push(await api('invite', 'POST', { to: ['nobody'], challenge: id }));
+  const stopped = burst.find((r) => r.status === 429);
+  check('limits: a flood of writes with no code is stopped', !!stopped && stopped.headers.get('Retry-After') === '60', `${burst.filter((r) => r.status === 429).length} of 35 refused`);
+  check('limits: reading a challenge still works meanwhile', (await api(`challenge/${id}`)).ok);
+}
+
+// ---- a family's cloud space (FAMILY_BYTES is 6 MB in the local test cloud; one long ride is about 2.6 MB) ----
+{
+  const fam = newTransferCode();
+  const put = (ride) => call(fam, `points/${ride}`, { method: 'PUT', body: pts });
+  check('space: a first long ride goes up', (await put('a')).ok);
+  check('space: and a second', (await put('b')).ok);
+  const third = await put('c');
+  check('space: a third does not fit', third.status === 507 && (await third.json()).error === 'the family\'s cloud space is full', `status ${third.status}`);
+  check('space: sending a ride again replaces it, it is not counted twice', (await put('a')).ok);
+  const bulky = (id) => ({ kind: 'pin', id, updated: 5000, deleted: false, data: { id, name: 'x'.repeat(190000) } });
+  const items = [bulky('p1'), bulky('p2'), bulky('p3'), bulky('p4'), bulky('p5')];
+  const refused = await call(fam, 'sync', { method: 'POST', body: JSON.stringify({ since: 0, items: [...items, { kind: 'ride', id: 'a', updated: 5000, deleted: true }] }) });
+  check('space: a sync that would overfill it is refused', refused.status === 507, `status ${refused.status}`);
+  check('space: but the deletion sent with it still makes room', (await call(fam, 'points/a')).status === 404);
+  check('space: so the same sync now goes through', (await call(fam, 'sync', { method: 'POST', body: JSON.stringify({ since: 0, items }) })).ok);
+  check('space: another family is not affected', (await call(stranger, 'points/c', { method: 'PUT', body: pts })).ok);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
