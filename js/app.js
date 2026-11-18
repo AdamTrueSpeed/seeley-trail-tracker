@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.35';
+const VERSION = '1.36';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '14'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -315,13 +315,52 @@ function reportLines(ride) {
 }
 
 /** @param dare offer to challenge friends to beat it (for an outing just finished) */
-async function showReport(ride, dare = false) {
+/**
+ * The summary of a walk or ride. With `saved` it is also the confirmation that
+ * the outing just finished has been kept: the "Saved" pop-up alone is hidden
+ * behind this screen, which left it unclear whether FINISH had worked.
+ */
+async function showReport(ride, dare = false, saved = false) {
   const res = await ask({
-    title: ride.name,
-    body: reportLines(ride).join('\n'),
+    title: saved ? `Saved: ${ride.name}` : ride.name,
+    body: (saved ? `✓ Finished and saved on this ${NATIVE ? 'phone' : 'device'}.\n\n` : '') + reportLines(ride).join('\n'),
     buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }, ...(dare ? [{ label: 'CHALLENGE FRIENDS TO BEAT IT', value: 'dare', cls: 'info' }] : [])],
   });
   if (res.button === 'dare') await quickDare(ride);
+  if (saved) await offerSync(ride);
+}
+
+/**
+ * Straight after an outing is saved: ask whether to send it to the cloud now,
+ * and say how that went. (It used to be left to a background sync, which this
+ * very summary screen was holding up, so it often had to be done by hand.)
+ */
+async function offerSync(ride) {
+  if (!cloud.code) return; // cloud sync is not turned on: nothing to offer
+  const noun = nounOf(ride);
+  if (!navigator.onLine) {
+    await ask({
+      title: 'No signal right now',
+      body: `Your ${noun} is safe on this ${NATIVE ? 'phone' : 'device'}. It will go to the cloud by itself the next time the app is open with a signal.`,
+      buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }],
+    });
+    return;
+  }
+  const res = await ask({
+    title: 'Sync with the cloud now?',
+    body: `This sends your ${noun} to your cloud copy, so your other devices and the trail map get it.`,
+    buttons: [{ label: 'SYNC NOW', value: 'save', cls: 'go' }, { label: 'Later', value: 'cancel' }],
+  });
+  if (res.button !== 'save') { toast('Not synced yet. It will sync by itself later, or use Settings > Cloud sync > Sync now.', 6000); return; }
+  toast('Syncing…', 20000);
+  await runSync(true);
+  await ask({
+    title: cloud.error ? 'The sync did not get through' : 'Synced with the cloud',
+    body: cloud.error
+      ? `Your ${noun} is still safe on this ${NATIVE ? 'phone' : 'device'}. The app will keep trying by itself (${cloud.error}).`
+      : `✓ Your ${noun} is now in the cloud as well as on this ${NATIVE ? 'phone' : 'device'}.`,
+    buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }],
+  });
 }
 
 /**
@@ -577,9 +616,9 @@ function updateClock() {
 function updateStatus() {
   const el = $('status'), fix = tracker.lastFix, rec = tracker.state !== 'idle';
   const set = (text, cls) => { el.textContent = text; el.className = `status ${cls}`; };
-  if (tracker.error === 'denied') set('Location is blocked for this site', 'bad');
+  if (tracker.error === 'denied') set(NATIVE ? 'Location is off or blocked. Tap here to fix it.' : 'Location is blocked for this site', 'bad');
   else if (!state.gpsWanted) set('Press START to turn on GPS', 'wait');
-  else if (!fix) set(tracker.error ? 'No GPS signal yet' : 'Finding GPS…', 'wait');
+  else if (!fix) set(tracker.error ? (NATIVE && tracker.errorText ? `GPS problem: ${tracker.errorText}` : 'No GPS signal yet') : 'Finding GPS…', tracker.error && NATIVE ? 'bad' : 'wait');
   else if (Date.now() - state.fixAt > 10000) set('GPS signal lost', 'bad');
   else if (tracker.state === 'paused') set('PAUSED', 'wait');
   else if (fix.acc > settings.maxAcc) set(rec ? `Weak GPS ±${Math.round(fix.acc)} m – not recording` : `Weak GPS ±${Math.round(fix.acc)} m`, 'bad');
@@ -712,13 +751,27 @@ async function addMethod() {
 }
 
 let starting = false;
+/** START. Whatever goes wrong is said on screen, and START can always be pressed again. */
 async function startRide() {
+  try {
+    await beginRide();
+  } catch (err) {
+    starting = false;
+    updateRideUi();
+    toast(`Could not start: ${err?.message ?? err}. Please try again.`, 8000);
+  }
+}
+async function beginRide() {
   if (!tracker.geo) { toast('This browser cannot use GPS.'); return; }
   if (starting || state.current) return;
   starting = true;
-  if (!(await discloseLocation())) { starting = false; return; }
-  const vehicle = await chooseVehicle('How are you travelling?', settings.vehicle);
-  starting = false;
+  let vehicle;
+  try {
+    if (!(await discloseLocation())) return;
+    vehicle = await chooseVehicle('How are you travelling?', settings.vehicle);
+  } finally {
+    starting = false;
+  }
   if (!vehicle) return;
   settings.vehicle = vehicle.key;
   saveSettings();
@@ -863,11 +916,10 @@ async function finishRide() {
   refreshRideMap();
   notice('');
   updateRideUi();
-  syncSoon();
   if (ride.status === 'done') {
     refreshChallenges(true); // today's distance goes on the board of any challenge under way
-    await showReport(ride, true);
-  }
+    await showReport(ride, true, true); // says it is saved, then offers to sync it
+  } else syncSoon();
 }
 
 /** Say what the trail is like from here on. It is stored with every point until it is changed. */
@@ -1175,10 +1227,8 @@ async function recoverUnfinished() {
     }
     await db.put('rides', ride);
     if (ride.status === 'done') {
-      toast(`Saved "${ride.name}"`);
       refreshRideMap();
-      syncSoon();
-      await showReport(ride, true);
+      await showReport(ride, true, true);
     }
   }
 }
@@ -3111,7 +3161,11 @@ $('tabs').addEventListener('click', (e) => {
 });
 
 $('btn-start').addEventListener('click', startRide);
-$('btn-finish').addEventListener('click', finishRide);
+$('btn-finish').addEventListener('click', () => finishRide().catch((err) => {
+  // Nothing is lost if this goes wrong: the points are already on the phone, and the app offers the outing again when reopened.
+  updateRideUi();
+  toast(`Could not finish: ${err?.message ?? err}. Your recording is safe; please press FINISH again.`, 9000);
+}));
 
 // ---- dark screen ---------------------------------------------------------------------
 //
@@ -3260,7 +3314,13 @@ async function boot() {
   await loadAll();
   if (OLD_HOME && !DEMO && await leaveOldHome()) return; // the app's new address is opening instead
 
-  let geo = NATIVE ? nativeGeo() : navigator.geolocation; // the Android app's GPS keeps coming with the screen off
+  // The Android app's GPS keeps coming with the screen off. If it cannot be started, the app records the way the
+  // web version does and says so (see nativeGeo).
+  let geo = NATIVE ? nativeGeo((why) => {
+    state.nativeGpsNote = why;
+    if (why) notice(`Recording works, but keep the screen on this time: the phone's background GPS could not start (${why}).`);
+    else if (state.current) notice('');
+  }) : navigator.geolocation;
   if (NATIVE) {
     document.querySelector('.tips li').textContent = 'In this Android app, GPS keeps recording with the screen off or another app in front. A notification stays up while it does.';
     $('awake').closest('label').querySelector('small').textContent = 'Not needed in this Android app: it records with the screen off.';
