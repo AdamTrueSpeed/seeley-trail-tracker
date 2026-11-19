@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.46';
+const VERSION = '1.47';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '21'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -379,12 +379,12 @@ async function offerSync(ride) {
       title: 'Stored on your ' + here,
       body: `Right now, this ${noun} is stored on your ${here} only, and there is no signal to upload it. `
         + (cloud.code ? 'It will go to the cloud by itself the next time the app is open with a signal.'
-          : 'To keep a copy in the cloud, turn on cloud sync under Merge & export when you have a signal.'),
+          : 'To keep a copy in the cloud, turn on cloud sync under My trails when you have a signal.'),
       buttons: ok,
     });
     return;
   }
-  // Chosen "always": no question, it just goes (and says so). Changed under Merge & export > Cloud sync.
+  // Chosen "always": no question, it just goes (and says so). Changed under My trails > Cloud sync.
   if (cloud.code && settings.autoUpload) {
     toast('Uploading to the cloud…', 20000);
     await runSync(true);
@@ -402,7 +402,7 @@ async function offerSync(ride) {
     title: 'Upload to the cloud?',
     body: `Right now, this ${noun} is stored on your ${here} only. Would you like to upload it to the cloud?`
       + (cloud.code ? '' : `\n\nCloud sync is not turned on yet on this ${here}. Uploading turns it on.`)
-      + '\n\nALWAYS UPLOAD does this by itself after every walk or ride from now on. You can switch that off again under Merge & export > Cloud sync.',
+      + '\n\nALWAYS UPLOAD does this by itself after every walk or ride from now on. You can switch that off again under My trails > Cloud sync.',
     buttons: [{ label: 'UPLOAD NOW', value: 'save', cls: 'go' }, { label: 'ALWAYS UPLOAD', value: 'always', cls: 'info' }, { label: 'Not now', value: 'cancel' }],
   });
   if (res.button === 'always') {
@@ -411,8 +411,8 @@ async function offerSync(ride) {
     res.button = 'save';
   }
   if (res.button !== 'save') {
-    toast(cloud.code ? 'Not uploaded yet. It will upload by itself later, or use Merge & export > Cloud sync > Sync now.'
-      : `Kept on your ${here} only. You can turn on cloud sync any time under Merge & export.`, 6000);
+    toast(cloud.code ? 'Not uploaded yet. It will upload by itself later, or use My trails > Cloud sync > Sync now.'
+      : `Kept on your ${here} only. You can turn on cloud sync any time under My trails.`, 6000);
     return;
   }
   if (!cloud.code) {
@@ -420,12 +420,12 @@ async function offerSync(ride) {
     const how = await ask({
       title: 'Are your walks already in the cloud?',
       body: 'If you already use cloud sync on another phone, a computer or the web version, choose I HAVE A CODE so everything stays together. '
-        + 'You get the code there under Merge & export > Cloud sync > Add another phone or computer.\n\nIf this is your first time, choose START NEW.',
+        + 'You get the code there under My trails > Cloud sync > Add another phone or computer.\n\nIf this is your first time, choose START NEW.',
       buttons: [{ label: 'I HAVE A CODE', value: 'join', cls: 'go' }, { label: 'START NEW', value: 'save' }, { label: 'Cancel', value: 'cancel' }],
     });
     if (how.button === 'join') await joinSync();
     else if (how.button === 'save') await useSyncCode(cleanSyncCode(localStorage.getItem('tt-sync-code-last')) ?? newSyncCode());
-    if (!cloud.code) { toast(`Kept on your ${here} only. You can turn on cloud sync any time under Merge & export.`, 6000); return; }
+    if (!cloud.code) { toast(`Kept on your ${here} only. You can turn on cloud sync any time under My trails.`, 6000); return; }
   } else {
     toast('Uploading…', 20000);
     await runSync(true);
@@ -858,7 +858,7 @@ function knownSystems() {
   return out;
 }
 
-/** The system being looked at on the Merge & export screen: null means home. */
+/** The system being looked at on the My trails screen: null means home. */
 const activeSystem = () => (settings.viewSystem && knownSystems().some((s) => !s.home && s.name === settings.viewSystem) ? settings.viewSystem : null);
 const inActiveSystem = (ride) => (ride.system ?? null) === activeSystem();
 
@@ -1634,7 +1634,7 @@ function suggestSystemName() {
   if (fromMap) return /trail/i.test(fromMap) ? fromMap : `${fromMap} Trail`;
   return settings.userName ? `${settings.userName}'s Trail` : 'My Trail';
 }
-/** The name of the system on screen: the home one, or another one picked on the Merge & export screen. */
+/** The name of the system on screen: the home one, or another one picked on the My trails screen. */
 const systemName = () => activeSystem() ?? homeName();
 
 async function askSystemName() {
@@ -3105,7 +3105,7 @@ async function joinSync(text = null, quiet = false) {
   if (text == null) {
     const res = await ask({
       title: 'Join your family\'s sync',
-      body: 'Paste the link or code from a phone or computer that already has cloud sync on (Merge & export > Cloud sync > Add another phone or computer).',
+      body: 'Paste the link or code from a phone or computer that already has cloud sync on (My trails > Cloud sync > Add another phone or computer).',
       input: { placeholder: 'Paste it here' },
       buttons: [{ label: 'JOIN', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
     });
@@ -3135,7 +3135,7 @@ $('btn-sync-add').addEventListener('click', async () => {
   if (res.button !== 'save') return;
   await shareMessage({
     title: 'Seeley Trail Tracker sync',
-    text: 'Open this on the other phone or computer to share the same rides. (If it opens outside the app, copy the link and use Merge & export > Cloud sync > Join with a code.)',
+    text: 'Open this on the other phone or computer to share the same rides. (If it opens outside the app, copy the link and use My trails > Cloud sync > Join with a code.)',
     url: `${SHARE_URL}#sync=${cloud.code}`,
   }, 'Copied. Paste it into a message to yourself.');
 });
@@ -3426,7 +3426,7 @@ if (IOS) {
 function showView(view) {
   if (view !== 'net') state.focusRide = null;
   state.view = view;
-  if (view === 'rides') view = state.view = 'net'; // the Saved screen is part of Merge & export since 1.39
+  if (view === 'rides') view = state.view = 'net'; // the Saved screen is part of My trails since 1.39
   for (const v of ['ride', 'net', 'hunt', 'settings']) $(`view-${v}`).hidden = v !== view;
   for (const b of $('tabs').children) b.classList.toggle('active', b.dataset.view === view);
   if (view === 'net') renderRides();
@@ -3437,7 +3437,7 @@ function showView(view) {
     refreshChallenges();
   }
   if (view === 'settings') renderSettings();
-  if (view === 'net') renderCloud(); // Cloud sync is on the Merge & export screen
+  if (view === 'net') renderCloud(); // Cloud sync is on the My trails screen
   if (view === 'net') {
     renderSettings();
     renderNetwork(true);

@@ -68,7 +68,7 @@
     <input type="file" id="photo-input" accept="image/*" capture="environment" hidden>
   </section>
 
-  <!-- ===== Merge & export ===== -->
+  <!-- ===== My trails (called "Merge & export" until 1.47; the owner chose the plainer name) ===== -->
   <section class="view" id="view-net" hidden>
     <div class="mapwrap short">
       <canvas id="map-net" class="map"></canvas>
@@ -233,7 +233,7 @@
     </label>
 
     <h1>Methods of travel</h1>
-    <p class="hint">You pick one each time you press START. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Merge &amp; export. To change it for a saved walk or ride, use its <b>Method</b> button.</p>
+    <p class="hint">You pick one each time you press START. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under My trails. To change it for a saved walk or ride, use its <b>Method</b> button.</p>
     <ul id="veh-list" class="coverage card"></ul>
     <div class="btnrow"><button id="btn-add-method" class="mid">Add a method of travel</button></div>
 
@@ -246,7 +246,7 @@
     <input type="file" id="ref-file" accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden>
 
     <h1>Merging tracks into trails</h1>
-    <p class="hint">How the walks and rides you record are combined into one trail network on the Merge &amp; export screen. Most people never need to change these.</p>
+    <p class="hint">How the walks and rides you record are combined into one trail network on the My trails screen. Most people never need to change these.</p>
     <div class="slider">
       <div class="row"><span>Merge distance</span><b id="thr-val"></b></div>
       <input type="range" id="thr" min="3" max="20" step="1">
@@ -283,7 +283,7 @@
       <li>Never press the power button during a ride: phones stop giving GPS to web apps the moment the screen is really off, or another app is in front. Use DARK SCREEN instead: it looks off and is safe in a pocket, but keeps recording.</li>
       <li id="tip-ios" hidden>iPhone: if GPS shows as blocked or stays weak, open the iPhone's Settings &gt; Privacy &amp; Security &gt; Location Services &gt; Safari Websites, choose While Using the App and turn on Precise Location. If the screen still dims during a ride, set Display &amp; Brightness &gt; Auto-Lock to Never while riding.</li>
       <li>Wait for the GPS number at the top to turn green before you set off.</li>
-      <li>Turn on cloud sync (under Merge &amp; export) to keep a safe copy of every walk and ride. Without it, everything stays on this phone only: save a backup file now and then.</li>
+      <li>Turn on cloud sync (under My trails) to keep a safe copy of every walk and ride. Without it, everything stays on this phone only: save a backup file now and then.</li>
       <li>To see walks and rides from two phones together, use cloud sync on both (Add another phone or computer), or save a backup file on one and use Restore on the other. Each one keeps the name of whoever recorded it.</li>
       <li>The app looks for a newer version every time it opens with a signal, and installs it by itself.</li>
     </ul>
@@ -292,7 +292,7 @@
 
 <nav class="tabs" id="tabs">
   <button data-view="ride" class="active">Record</button>
-  <button data-view="net">Merge &amp; export</button>
+  <button data-view="net">My trails</button>
   <button data-view="hunt">Play</button>
   <button data-view="settings">Settings</button>
 </nav>
