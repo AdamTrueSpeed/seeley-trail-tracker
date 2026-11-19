@@ -153,7 +153,8 @@ const PHOTO_ROOM = 1500000;
  * @param photo { type, data: ArrayBuffer }
  */
 export async function fitPhoto(photo) {
-  if (photo.data.byteLength <= PHOTO_ROOM) return photo;
+  // The cloud takes only JPEG, PNG and WebP; any other kind (an iPhone's HEIC, say) goes up as a JPEG copy.
+  if (photo.data.byteLength <= PHOTO_ROOM && ['image/jpeg', 'image/png', 'image/webp'].includes(photo.type || 'image/jpeg')) return photo;
   const url = URL.createObjectURL(new Blob([photo.data], { type: photo.type || 'image/jpeg' }));
   try {
     const img = new Image();

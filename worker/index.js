@@ -42,7 +42,9 @@ const CORS = {
   'Access-Control-Allow-Methods': 'GET, PUT, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Authorization, Content-Type',
   'Access-Control-Max-Age': '86400',
+  'X-Content-Type-Options': 'nosniff', // on every answer: a browser must not second-guess the type (security audit S6)
 };
+const PICTURE_TYPES = ['image/jpeg', 'image/png', 'image/webp']; // the app turns anything else into a JPEG first (fitPhoto)
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CORS } });
 const fail = (status, error) => json({ error }, status);
 
@@ -156,10 +158,11 @@ async function photo(db, grp, id, request, cap) {
     if (!row) return fail(404, 'no picture for that pin yet');
     return new Response(new Uint8Array(row.data), { headers: { 'Content-Type': row.type, 'Cache-Control': 'no-store', ...CORS } });
   }
+  const type = request.headers.get('Content-Type') || 'image/jpeg';
+  if (!PICTURE_TYPES.includes(type)) return fail(415, 'only JPEG, PNG or WebP pictures'); // no SVG, which can carry a script
   const data = await request.arrayBuffer();
   if (!data.byteLength || data.byteLength > MAX_PHOTO) return fail(413, 'picture missing or too large');
   if ((await stored(db, grp, { photo: id })) + data.byteLength > cap) return full();
-  const type = /^image\/[a-z0-9.+-]+$/.test(request.headers.get('Content-Type') ?? '') ? request.headers.get('Content-Type') : 'image/jpeg';
   await db.prepare('INSERT INTO photos (grp, id, type, data) VALUES (?, ?, ?, ?) ON CONFLICT (grp, id) DO UPDATE SET type = ?3, data = ?4').bind(grp, id, type, data).run();
   return json({ ok: true });
 }

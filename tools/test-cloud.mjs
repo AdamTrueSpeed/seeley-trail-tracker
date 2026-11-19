@@ -45,6 +45,8 @@ check('cloud: a photo goes up', (await call(family, 'photo/9', { method: 'PUT', 
 const back = await call(family, 'photo/9');
 const got = new Uint8Array(await back.arrayBuffer());
 check('cloud: and comes back the same', back.headers.get('Content-Type') === 'image/jpeg' && got.length === picture.length && got.every((v, i) => v === picture[i]));
+check('cloud: with nosniff, so a browser will not guess its type', back.headers.get('X-Content-Type-Options') === 'nosniff');
+check('cloud: an SVG picture is refused', (await call(family, 'photo/8', { method: 'PUT', body: '<svg xmlns="http://www.w3.org/2000/svg"/>', headers: { 'Content-Type': 'image/svg+xml' } })).status === 415);
 
 await sync(family, 0, [{ kind: 'ride', id: '1', updated: 3000, deleted: true }, { kind: 'pin', id: '9', updated: 3000, deleted: true }]);
 const after = await sync(family, 0);
