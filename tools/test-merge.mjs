@@ -231,8 +231,8 @@ if (existsSync(refPath)) {
   const kluaneFromBucket = between(kluane, end(bucket), end(kluane));
   const whiteFromKluane = between(white, end(kluane), end(white));
   const teslinToHoot = between(teslin, teslin[0], hoot[0]);
-  // Since map 19 Teslin runs on beside the property line into Moose Creek; the way from Teslin to the hunt camp is the link
-  // that curves off it (the link piece whose far end is nearest Hootalinqua's foot).
+  // Since map 23 Teslin runs on from its bend to the big meadow and down the meadow's east side into Moose Creek; the way from
+  // Teslin to the hunt camp is the link that curves off it at the bend (the link piece whose far end is nearest Hootalinqua's foot).
   const gap = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
   const curve = trails['Link trails'].reduce((b, p) => (gap(end(p), end(hoot)) < gap(end(b), end(hoot)) ? p : b));
   const teslinToCamp = [...between(teslin, teslin[0], curve[0]), ...curve];
