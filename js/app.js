@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.47';
+const VERSION = '1.48';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '21'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -2980,8 +2980,17 @@ function renderCloud() {
     : cloud.busy ? 'On. Syncing now…'
       : cloud.error ? `On, but the last sync did not get through (${cloud.error}). It will try again by itself.`
         : when ? `On. Everything was in step at ${when}.` : 'On. Waiting for a signal to sync.';
-  for (const id of ['btn-sync-on', 'btn-sync-join']) $(id).hidden = on;
-  for (const id of ['btn-sync-add', 'btn-sync-now', 'btn-sync-off']) $(id).hidden = !on;
+  $('btn-sync-join').hidden = on;
+  for (const id of ['btn-sync-add', 'btn-sync-off']) $(id).hidden = !on;
+  // The bar at the top of My trails: where the cloud stands in a line, and the one button most people need.
+  const bad = on && !cloud.busy && !!cloud.error;
+  $('sync-bar').className = `syncbar ${!on ? 'off' : bad ? 'bad' : 'ok'}`;
+  $('sync-bar-text').textContent = !on ? 'Cloud sync is off: your walks are on this device only.'
+    : cloud.busy ? 'Syncing with the cloud…'
+      : bad ? 'The last sync did not get through. It will try again by itself.'
+        : when ? `In step with the cloud at ${when}.` : 'Waiting for a signal to sync.';
+  $('btn-sync-top').textContent = !on ? 'TURN ON CLOUD SYNC' : cloud.busy ? 'SYNCING…' : 'SYNC NOW';
+  $('btn-sync-top').disabled = on && cloud.busy;
   $('btn-sync-move').hidden = !on || !OLD_HOME;
   $('auto-upload-wrap').hidden = !on;
   $('auto-upload').checked = !!settings.autoUpload;
@@ -3089,16 +3098,17 @@ async function useSyncCode(code) {
   await runSync(true);
 }
 
-$('btn-sync-on').addEventListener('click', async () => {
+async function turnOnSync() {
   const res = await ask({
     title: 'Turn on cloud sync?',
-    body: 'Your rides, pins, photos and branch names are copied to your database on Cloudflare whenever this device has a signal. Any phone or computer you give your family sync code to can see and change them. Everything still works with no signal.',
+    body: 'Your walks, rides, pins and photos are copied to the cloud whenever this device has a signal. Any phone or computer you give your family sync code to can see and change them. Everything still works with no signal.',
     buttons: [{ label: 'TURN ON', value: 'save', cls: 'go' }, { label: 'I have a code already', value: 'join' }, { label: 'Cancel', value: 'cancel' }],
   });
   if (res.button === 'join') await joinSync();
   // Turned off and on again on the same device: the same code, so the same rides.
   else if (res.button === 'save') await useSyncCode(cleanSyncCode(localStorage.getItem('tt-sync-code-last')) ?? newSyncCode());
-});
+}
+$('btn-sync-top').addEventListener('click', () => (cloud.code ? runSync(true) : turnOnSync()));
 
 /** @param quiet arriving from the app's old address with this device's own code: nothing to ask */
 async function joinSync(text = null, quiet = false) {
@@ -3125,7 +3135,6 @@ async function joinSync(text = null, quiet = false) {
   if (res.button === 'save') await useSyncCode(code);
 }
 $('btn-sync-join').addEventListener('click', () => joinSync());
-$('btn-sync-now').addEventListener('click', () => runSync(true));
 $('btn-sync-add').addEventListener('click', async () => {
   const res = await ask({
     title: 'Add another phone or computer',

@@ -79,6 +79,11 @@
       </div>
     </div>
     <div class="panel">
+      <!-- Since 1.48 the cloud comes first on this screen (owner: the sync button "seems a little hidden"). -->
+      <div id="sync-bar" class="syncbar">
+        <span id="sync-bar-text"></span>
+        <button id="btn-sync-top" class="big info"></button>
+      </div>
       <div class="layers">
         <label><input type="checkbox" id="show-raw"><span class="key raw"></span>My tracks</label>
         <label><input type="checkbox" id="show-merged"><span class="key merged" id="key-merged"></span>Combined</label>
@@ -93,9 +98,8 @@
         <summary>Cloud sync</summary>
         <p class="hint" id="sync-info"></p>
         <div class="btnrow">
-          <button id="btn-sync-on" class="mid">Turn on cloud sync</button>
+          <!-- Turning sync on and Sync now are the big button in the bar at the top of this screen. -->
           <button id="btn-sync-join" class="mid ghost">Join with a code</button>
-          <button id="btn-sync-now" class="mid" hidden>Sync now</button>
           <button id="btn-sync-add" class="mid" hidden>Add another phone or computer</button>
           <button id="btn-sync-move" class="mid" hidden>Move to the app's new address</button>
           <button id="btn-sync-off" class="mid ghost" hidden>Turn off</button>

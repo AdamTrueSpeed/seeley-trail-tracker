@@ -239,6 +239,11 @@ input[type=range] { width: 100%; height: 44px; margin: 2px 0; accent-color: var(
 .toggle .mid { flex: none; }
 #name-val { color: var(--info); font-size: 20px; font-weight: 800; margin: 2px 0; }
 .toggle.sys { margin-bottom: 0; padding: 8px 14px; }
+.syncbar { display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 2px solid var(--line); border-radius: 14px; padding: 10px 12px; }
+.syncbar span { font-weight: 700; font-size: 15px; }
+.syncbar.ok { border-color: var(--info); }
+.syncbar.bad { border-color: var(--warn, #ffd60a); }
+.syncbar .big { margin: 0; }
 .toggle.sys b { display: block; color: var(--info); font-size: 19px; overflow-wrap: anywhere; }
 .list .meta b { color: #fff; }
 
