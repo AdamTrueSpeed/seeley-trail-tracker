@@ -231,12 +231,17 @@ if (existsSync(refPath)) {
   const kluaneFromBucket = between(kluane, end(bucket), end(kluane));
   const whiteFromKluane = between(white, end(kluane), end(white));
   const teslinToHoot = between(teslin, teslin[0], hoot[0]);
+  // Since map 19 Teslin runs on beside the property line into Moose Creek; the way from Teslin to the hunt camp is the link
+  // that curves off it (the link piece whose far end is nearest Hootalinqua's foot).
+  const gap = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+  const curve = trails['Link trails'].reduce((b, p) => (gap(end(p), end(hoot)) < gap(end(b), end(hoot)) ? p : b));
+  const teslinToCamp = [...between(teslin, teslin[0], curve[0]), ...curve];
 
-  const day1 = [...teslin, ...rev(hoot), ...rev(teslinToHoot)];                       // Teslin, back up Hootalinqua, home along Teslin
+  const day1 = [...teslinToCamp, ...rev(hoot), ...rev(teslinToHoot)];                 // Teslin, the link to the hunt camp, back up Hootalinqua, home along Teslin
   const day2 = [...bucket, ...kluaneFromBucket, ...whiteFromKluane, ...rev(maple)];   // Bucket, Kluane, White Pass, Maple Meadow
   const day3 = [...kings, ...moose, ...rev(takhini)];                                 // Kings Throne, Moose Creek, Takhini
   const day4 = [...rev(teslin), ...bucket, ...kluaneFromBucket];                      // repeat laps on another day
-  const truths = [teslin, hoot, bucket, kluaneFromBucket, whiteFromKluane, maple, kings, moose, takhini,
+  const truths = [teslin, curve, hoot, bucket, kluaneFromBucket, whiteFromKluane, maple, kings, moose, takhini,
     [end(kings), moose[0]], [teslin[0], bucket[0]]]; // plus the two straight hops between trail ends
   const days = [day1, day2, day3, day4].map((p, i) => track('Day ' + (i + 1), ride(p, 70 + i)));
   const net = check('four days over the real network', days, truths, { ratio: [0.95, 1.06], segments: [9, 22], worstErr: 12 });
