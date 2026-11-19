@@ -34,21 +34,21 @@
       <div class="stat"><b id="st-time" class="clock">0:00</b><i>time</i></div>
     </div>
     <div id="activity" class="activity" hidden>
-      <span id="act-moving"></span><span id="act-steps"></span><span id="act-kcal"></span><span id="act-elev"></span><span id="act-pts"></span>
+      <span id="act-moving"></span><span id="act-steps"></span><span id="act-kcal"></span><span id="act-elev"></span>
     </div>
     <div class="mapwrap">
       <canvas id="map-ride" class="map"></canvas>
       <div id="status" class="status wait">Starting…</div>
-      <button id="share-pill" class="sharepill">PRIVATE</button>
-      <button id="cond-pill" class="sharepill cond" hidden>TRAIL: NOT SET</button>
+      <button id="share-pill" class="sharepill">LOCATION SHARING: OFF</button>
+      <button id="cond-pill" class="sharepill cond" hidden>TRAIL: TAP TO DESCRIBE</button>
       <button id="hunt-pill" class="sharepill hunt" hidden>HUNT</button>
       <div id="demo-flag" class="status demo" hidden>DEMO – simulated GPS</div>
       <div class="mapbtns">
         <button id="ride-in" aria-label="Zoom in">+</button>
         <button id="ride-out" aria-label="Zoom out">&minus;</button>
-        <button id="ride-center" aria-label="Centre on me" class="on">&#9678;</button>
-        <button id="ride-fit" aria-label="Show everything">&#10530;</button>
-        <button id="ride-walked" class="word" aria-label="Show which trails have been recorded with GPS" hidden>GPS</button>
+        <button id="ride-center" aria-label="Centre on me" class="on">&#9678;<small>me</small></button>
+        <button id="ride-fit" aria-label="Show everything">&#10530;<small>all</small></button>
+        <button id="ride-walked" class="word" aria-label="Show which trails have been recorded with GPS" hidden>GPS<small>done</small></button>
       </div>
       <div id="notice" class="notice" hidden></div>
     </div>
@@ -75,7 +75,7 @@
       <div class="mapbtns">
         <button id="net-in" aria-label="Zoom in">+</button>
         <button id="net-out" aria-label="Zoom out">&minus;</button>
-        <button id="net-fit" aria-label="Show everything">&#10530;</button>
+        <button id="net-fit" aria-label="Show everything">&#10530;<small>all</small></button>
       </div>
     </div>
     <div class="panel">
@@ -301,6 +301,7 @@
   <form method="dialog">
     <h2 id="dlg-title"></h2>
     <p id="dlg-body"></p>
+    <div id="dlg-extra"></div>
     <img id="dlg-img" alt="" hidden>
     <input id="dlg-input" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="done">
     <div id="dlg-chips" class="chips"></div>

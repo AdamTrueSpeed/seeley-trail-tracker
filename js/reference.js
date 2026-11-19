@@ -194,6 +194,29 @@ export function overlapShare(a, b, maxDist = 12) {
 }
 
 /**
+ * The named trails a track followed, in the order it reached them: [{ name, metres }]. A trail counts once the
+ * track has run beside it (within maxDist) for at least `least` metres, so crossing one does not count.
+ * @param segments [[{ lat, lon }]]
+ */
+export function trailsAlong(prepared, segments, maxDist = 15, least = 60) {
+  if (!prepared) return [];
+  const got = new Map(); // trail index -> { first sample beside it, samples beside it }
+  let k = 0;
+  for (const seg of segments) {
+    along(seg.map((p) => [prepared.proj.x(p.lon), prepared.proj.y(p.lat)]), SAMPLE, (x, y) => {
+      k++;
+      const ti = prepared.grid.nearest(x, y, maxDist);
+      if (ti < 0) return;
+      const e = got.get(ti) ?? { first: k, n: 0 };
+      e.n++;
+      got.set(ti, e);
+    });
+  }
+  return [...got].map(([ti, e]) => ({ name: prepared.trails[ti].name, metres: e.n * SAMPLE, first: e.first }))
+    .filter((t) => t.metres >= least).sort((a, b) => a.first - b.first).map(({ name, metres }) => ({ name, metres }));
+}
+
+/**
  * How much of each named trail has a GPS track within `maxDist` of it.
  * @param tracks [{ segments: [[{lat, lon}]] }]
  * @returns [{ name, color, length, pct }]

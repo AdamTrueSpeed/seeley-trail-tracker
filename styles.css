@@ -94,6 +94,8 @@ button { cursor: pointer; touch-action: manipulation; }
 .mapbtns button.word { font-size: 15px; letter-spacing: 0.5px; }
 .mapbtns button.word.on { border-color: #39ff14; color: #39ff14; }
 .mapbtns button[hidden] { display: none; }
+.mapbtns button small { display: block; font-size: 10.5px; font-weight: 800; letter-spacing: 0.3px; margin-top: 1px; text-transform: uppercase; }
+.mapbtns button.word small { margin-top: 3px; }
 .mapbtns button:active { background: #333; }
 
 .notice {
@@ -246,6 +248,10 @@ summary { font-weight: 800; padding: 10px 0; }
 details.adv { margin-top: 22px; }
 details.adv > summary { font-size: 18px; }
 details.adv h1 { font-size: 17px; margin: 16px 0 6px; }
+.netstats.report { margin: 4px 0 10px; }
+.netstats.report b { font-size: 20px; }
+details.more { margin-bottom: 10px; }
+details.more p { margin: 2px 0 6px; font-size: 14.5px; }
 .coverage { list-style: none; margin: 0 0 10px; padding: 0; }
 .coverage li { display: grid; grid-template-columns: 14px 1fr auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); font-weight: 700; font-size: 15px; }
 .coverage .dot { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #555; }

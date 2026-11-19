@@ -6,7 +6,7 @@ import { Tracker } from './tracker.js';
 import { MapView } from './mapview.js';
 import { buildNetwork } from './merge.js';
 import { buildKml, buildKmz, parseKml, readKmlFile, TRAIL_COLORS } from './kml.js';
-import { prepareReference, nameSegments, coverage, overlapShare, indexConditions, conditionsAlong, conditionText } from './reference.js';
+import { prepareReference, nameSegments, coverage, overlapShare, indexConditions, conditionsAlong, conditionText, trailsAlong } from './reference.js';
 import { estimateWidth, widthLabel, VEHICLES, vehicleOf } from './width.js';
 import { LiveShare, newCode, cleanCode, formatCode } from './share.js';
 import { StepDetector, stepsFromDistance, watchMotion, kcalFor, kcalOfRide, effortOf, elevationOf, movingTimeOf, STOP_GAP } from './activity.js';
@@ -20,7 +20,7 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.45';
+const VERSION = '1.46';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
 const REF_VERSION = '21'; // raise whenever reference.kml changes, so phones pick up the corrected map
@@ -279,7 +279,6 @@ function updateActivity() {
   $('act-kcal').textContent = fmtKcal(activity.kcal);
   const elev = elevationOf(state.tracks.get(ride.id) ?? []);
   $('act-elev').textContent = elev ? `↕ ${Math.round(elev.diff)} m` : '';
-  $('act-pts').textContent = `${tracker.count} pts`;
   const pill = $('cond-pill');
   pill.hidden = false;
   pill.textContent = `TRAIL: ${ride.cond ? ride.cond.toUpperCase() : 'TAP TO DESCRIBE'}`;
@@ -323,6 +322,33 @@ function reportLines(ride) {
   ].filter(Boolean);
 }
 
+/** A name from the trails an outing followed ("Teslin, Kluane and Kings Throne walk"), or null if it followed none on the map. */
+function suggestedName(ride, noun) {
+  const names = trailsAlong(state.refIndex, state.tracks.get(ride.id) ?? [])
+    .map((t) => t.name).filter((nm) => !/link|boundary|wetland/i.test(nm)).slice(0, 3);
+  if (!names.length) return null;
+  return `${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`} ${noun}`;
+}
+
+/**
+ * The end-of-outing report as a block for the dialog: the three figures people look at, in big type, and the
+ * rest folded away under "More details" (it used to be one long list of lines).
+ */
+function reportView(ride) {
+  const el = (tag, cls, text) => Object.assign(document.createElement(tag), cls ? { className: cls } : {}, text != null ? { textContent: text } : {});
+  const moving = movingOf(ride), steps = stepsOf(ride) != null ? stepsText(ride).replace(' steps', '') : null;
+  const figures = [[fmtDist(ride.dist), 'distance'], [fmtClock(timeOf(ride)), 'time'],
+    steps ? [steps, 'steps'] : [moving > 0 ? fmtSpeed(ride.dist, moving).replace(' km/h', '') : '-', 'km/h average']];
+  const grid = el('div', 'netstats report');
+  for (const [v, k] of figures) { const d = el('div'); d.append(el('b', null, v), el('i', null, k)); grid.append(d); }
+  const more = el('details', 'more');
+  more.append(el('summary', null, 'More details'));
+  for (const line of reportLines(ride).slice(1)) if (!/^(Distance|Time|Steps):/.test(line)) more.append(el('p', null, line));
+  const wrap = el('div');
+  wrap.append(grid, more);
+  return wrap;
+}
+
 /** @param dare offer to challenge friends to beat it (for an outing just finished) */
 /**
  * The summary of a walk or ride. With `saved` it is also the confirmation that
@@ -332,7 +358,8 @@ function reportLines(ride) {
 async function showReport(ride, dare = false, saved = false) {
   const res = await ask({
     title: saved ? `Saved: ${ride.name}` : ride.name,
-    body: (saved ? `✓ Finished and saved on this ${NATIVE ? 'phone' : 'device'}.\n\n` : '') + reportLines(ride).join('\n'),
+    body: (saved ? `✓ Saved on this ${NATIVE ? 'phone' : 'device'}.\n` : '') + reportLines(ride)[0],
+    extra: reportView(ride),
     buttons: [{ label: 'OK', value: 'cancel', cls: 'go' }, ...(dare ? [{ label: 'CHALLENGE FRIENDS TO BEAT IT', value: 'dare', cls: 'info' }] : [])],
   });
   if (res.button === 'dare') await quickDare(ride);
@@ -446,12 +473,13 @@ $('notice').addEventListener('click', () => notice(''));
  * `pick` set, tapping one is the answer ({ button: 'chip', text: the chip }).
  * A body with line breaks is shown as separate lines.
  */
-function ask({ title, body = '', input = null, chips = [], buttons, focus = true, image = null, pick = false }) {
+function ask({ title, body = '', input = null, chips = [], buttons, focus = true, image = null, pick = false, extra = null }) {
   const dlg = $('dlg'), inp = $('dlg-input');
   const make = (label, cls, type) => Object.assign(document.createElement('button'), { textContent: label, className: cls, type });
   $('dlg-title').textContent = title;
   $('dlg-body').textContent = body;
   $('dlg-body').hidden = !body;
+  $('dlg-extra').replaceChildren(...(extra ? [extra] : [])); // a ready-made block (DOM, never HTML text) under the body
   $('dlg-img').hidden = !image;
   if (image) $('dlg-img').src = image; else $('dlg-img').removeAttribute('src');
   inp.hidden = !input;
@@ -1021,6 +1049,7 @@ async function finishRide() {
   const carryOn = () => { if (heldHere) { endPause(ride); tracker.resume(); db.put('rides', ride); } updateRideUi(); };
   const noun = nounOf(ride);
   const n = doneRides().filter((r) => nounOf(r) === noun).length + 1;
+  const suggested = suggestedName(ride, noun);
   noteSteps(ride);
   const effort = [stepsText(ride), fmtKcal(activity.kcal)].filter(Boolean).join(' · ');
   const res = tracker.count < 2
@@ -1031,8 +1060,9 @@ async function finishRide() {
     })
     : await ask({
       title: `Save this ${noun}`,
-      body: `${fmtDist(tracker.dist)} in ${fmtClock(timeOf(ride))} · ${methodOf(ride).name}${seatText(ride)} · ${effort}. Give it a name, such as the trail or loop you covered.`,
-      input: { value: `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
+      body: `${fmtDist(tracker.dist)} in ${fmtClock(timeOf(ride))} · ${methodOf(ride).name}${seatText(ride)} · ${effort}. ${suggested
+        ? 'The name below comes from the trails you followed. Change it if you like.' : 'Give it a name, such as the trail or loop you covered.'}`,
+      input: { value: suggested ?? `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
       buttons: [
         { label: `SAVE ${noun.toUpperCase()}`, value: 'save', cls: 'go' },
         { label: 'Keep going', value: 'cancel' },
@@ -1062,7 +1092,7 @@ async function finishRide() {
     // The clock stops at the tap on FINISH, unless more was recorded while the question was on screen.
     ride.finishedAt = tracker.count > countAtTap ? clockNow() : tappedAt;
     endPause(ride, ride.finishedAt);
-    ride.name = res.text || `${capital(noun)} ${n}`;
+    ride.name = res.text || suggested || `${capital(noun)} ${n}`;
     ride.status = 'done';
     await db.put('rides', ride);
     toast(`Saved "${ride.name}"`);
@@ -1418,7 +1448,7 @@ async function recoverUnfinished() {
       const named = await ask({
         title: `Save this ${noun}`,
         body: `${fmtDist(m.dist)} recorded, all of it kept. Give it a name, such as the trail or loop you covered.`,
-        input: { value: ride.name || `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
+        input: { value: ride.name || suggestedName(ride, noun) || `${capital(noun)} ${n}`, placeholder: `e.g. ${capital(noun)} 1 - North Loop` },
         buttons: [{ label: `SAVE ${noun.toUpperCase()}`, value: 'save', cls: 'go' }],
       });
       ride.name = named.text || ride.name || `${capital(noun)} ${n}`;
@@ -2003,9 +2033,9 @@ $('btn-avatar-clear').addEventListener('click', () => {
 // nothing is sent.
 
 const MODES = {
-  private: { label: 'Private', pill: 'PRIVATE', note: 'Nothing leaves this phone. Nobody can see you, and you see nobody.' },
-  friends: { label: 'Friends only', pill: 'FRIENDS', note: 'People you have given your friend code to can see you while this app is open.' },
-  everyone: { label: 'Everyone nearby', pill: 'EVERYONE', note: 'Anyone using this app within roughly 5 km can see you while this app is open.' },
+  private: { label: 'Private', pill: 'LOCATION SHARING: OFF', note: 'Nothing leaves this phone. Nobody can see you, and you see nobody.' },
+  friends: { label: 'Friends only', pill: 'SHARING WITH FRIENDS', note: 'People you have given your friend code to can see you while this app is open.' },
+  everyone: { label: 'Everyone nearby', pill: 'SHARING WITH EVERYONE', note: 'Anyone using this app within roughly 5 km can see you while this app is open.' },
 };
 const share = new LiveShare({ onChange: () => renderPeople() });
 
