@@ -20,10 +20,10 @@ import {
   dailyWinners, challengeLink, readChallengeLink, createChallenge, fetchChallenge, postScores, sendInvites, fetchInvites,
 } from './challenge.js';
 
-const VERSION = '1.43';
+const VERSION = '1.44';
 // Where friends get the app. icons/qr.svg and icons/qr.png are this address as a
 // QR code: if it ever changes, the two pictures have to be made again.
-const REF_VERSION = '19'; // raise whenever reference.kml changes, so phones pick up the corrected map
+const REF_VERSION = '20'; // raise whenever reference.kml changes, so phones pick up the corrected map
 const SHARE_URL ='https://seeley-trail-tracker.seeley-trails.workers.dev/'; // keep in step with version.json (tools/check-release.mjs checks it)
 const PARAMS = new URLSearchParams(location.search);
 const DEMO = PARAMS.has('demo');
@@ -35,7 +35,7 @@ const INSTALLED = NATIVE || navigator.standalone === true || matchMedia('(displa
 installShare(); // inside the Android app, "share" buttons use the phone's share sheet (see native.js)
 const SCREEN_TIP = IOS
   ? 'This iPhone would not let the app keep the screen on. While riding, set Settings > Display & Brightness > Auto-Lock to Never.'
-  : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while riding.';
+  : 'This browser cannot keep the screen on by itself. Set your phone\'s screen timeout as long as it goes while you record.';
 // The HEADINGS a pin or a photo can be filed under (a description is written under the heading: see describePin).
 const PIN_LABELS = ['Trailhead', 'Point of interest', 'Trail marker', 'Hazard', 'Bridge', 'Intersection', 'Gate', 'Water crossing', 'Fallen tree', 'Viewpoint', 'Deer stand'];
 const PHOTO_LABELS = [
@@ -282,7 +282,7 @@ function updateActivity() {
   $('act-pts').textContent = `${tracker.count} pts`;
   const pill = $('cond-pill');
   pill.hidden = false;
-  pill.textContent = `TRAIL: ${ride.cond ? ride.cond.toUpperCase() : 'NOT SET'}`;
+  pill.textContent = `TRAIL: ${ride.cond ? ride.cond.toUpperCase() : 'TAP TO DESCRIBE'}`;
   pill.classList.toggle('set', !!ride.cond);
 }
 
@@ -410,25 +410,6 @@ async function offerSync(ride) {
       : `✓ Your ${noun} is now in the cloud as well as on this ${here}.`,
     buttons: ok,
   });
-}
-
-/**
- * Quick labels: the names typed most recently on this phone first, then the
- * standard ones for a pin or a photo.
- */
-function quickLabels(standard) {
-  const recent = Array.isArray(readJson('tt-pin-labels')) ? readJson('tt-pin-labels') : [];
-  const seen = new Set();
-  return [...recent, ...standard].filter((l) => !seen.has(l.toLowerCase()) && seen.add(l.toLowerCase()));
-}
-const pinLabels = () => quickLabels(PIN_LABELS);
-const photoLabels = () => quickLabels(PHOTO_LABELS);
-
-function rememberPinLabel(name) {
-  const standard = [...PIN_LABELS, ...PHOTO_LABELS].map((l) => l.toLowerCase());
-  if (/^(Pin|Photo) \d+$/.test(name) || standard.includes(name.toLowerCase())) return;
-  const recent = quickLabels([]).filter((l) => l.toLowerCase() !== name.toLowerCase());
-  localStorage.setItem('tt-pin-labels', JSON.stringify([name, ...recent].slice(0, 6)));
 }
 
 /** Who has recorded what: [{ name, rides, dist, pins }], busiest first. */
@@ -739,7 +720,7 @@ function startGps() {
 async function chooseVehicle(title, current) {
   const res = await ask({
     title,
-    body: 'This sets how wide a strip each pass counts for, and tunes the GPS to your speed.',
+    body: 'So the app can measure the trail properly and set the GPS for your speed.',
     buttons: [
       ...allMethods().map((v) => ({ label: v.name, value: v.key, cls: v.key === current ? 'go' : 'ghost' })),
       { label: '+ Add another…', value: 'add', cls: 'info' },
@@ -1033,6 +1014,11 @@ async function finishRide() {
   const ride = state.current;
   if (!ride) return;
   const tappedAt = clockNow(), countAtTap = tracker.count;
+  // FINISH means stop: nothing more is recorded while the question is on screen (walking back to the car while typing a
+  // name used to be added to the walk). "Keep going" carries on from where it was.
+  const heldHere = tracker.state === 'recording';
+  if (heldHere) { ride.pausedAt = tappedAt; tracker.pause(); }
+  const carryOn = () => { if (heldHere) { endPause(ride); tracker.resume(); db.put('rides', ride); } updateRideUi(); };
   const noun = nounOf(ride);
   const n = doneRides().filter((r) => nounOf(r) === noun).length + 1;
   noteSteps(ride);
@@ -1053,14 +1039,14 @@ async function finishRide() {
         { label: `Throw this ${noun} away`, value: 'discard', cls: 'stop' },
       ],
     });
-  if (res.button === 'cancel') return;
+  if (res.button === 'cancel') { carryOn(); return; }
   if (res.button === 'discard' && tracker.count >= 2) {
     const sure = await ask({
       title: `Throw this ${noun} away?`,
       body: `${fmtDist(tracker.dist)} of recording will be deleted. This cannot be undone.`,
       buttons: [{ label: 'Keep it', value: 'cancel', cls: 'go' }, { label: `DELETE ${noun.toUpperCase()}`, value: 'yes', cls: 'stop' }],
     });
-    if (sure.button !== 'yes') return;
+    if (sure.button !== 'yes') { carryOn(); return; }
   }
   noteSteps(ride); // steps taken while the question was on screen
   stopActivity();
@@ -1758,11 +1744,11 @@ function renderNetwork(fit) {
     : settings.systemName ? 'Used as the name of the Google Earth file and map.'
       : (state.ref ? 'Suggested from your existing map. Tap Change if it is not right.' : 'Suggested name. Tap Change to set your own.');
 
-  const st = net.stats;
+  const st = net.stats, used = doneRides().filter((r) => r.include && inActiveSystem(r)).length;
   $('net-stats').innerHTML = `
-    <div><b>${(st.rawLength / 1000).toFixed(2)}</b><i>km ridden</i></div>
+    <div><b>${(st.rawLength / 1000).toFixed(2)}</b><i>km travelled</i></div>
     <div class="hl"><b style="color:${css}">${(st.mergedLength / 1000).toFixed(2)}</b><i>km of trail</i></div>
-    <div><b>${st.rawPoints} → ${st.mergedPoints}</b><i>GPS → map points</i></div>`;
+    <div><b>${used}</b><i>${used === 1 ? 'walk or ride used' : 'walks &amp; rides used'}</i></div>`;
   $('btn-export').disabled = !net.segments.length;
 
   const cov = coverage(state.refIndex, net.tracks);
@@ -1895,7 +1881,8 @@ function renderSettings() {
 
   const points = [...state.tracks.values()].reduce((n, segs) => n + segs.reduce((m, s) => m + s.length, 0), 0);
   const photoCount = state.pins.filter((p) => p.photo).length;
-  $('storage-info').textContent = `${doneRides().length} ride(s), ${points} GPS points, ${state.pins.length - photoCount} pin(s) and ${photoCount} photo(s) are stored on this phone. A backup file holds all of it, pictures included.`;
+  const many = (n, one, more) => `${n.toLocaleString()} ${n === 1 ? one : more}`;
+  $('storage-info').textContent = `${many(doneRides().length, 'walk or ride', 'walks and rides')}, ${many(state.pins.length - photoCount, 'pin', 'pins')} and ${many(photoCount, 'photo', 'photos')} are stored on this phone (${many(points, 'GPS point', 'GPS points')}). A backup file holds all of it, pictures included.`;
   $('name-val').textContent = settings.userName || 'Not set yet';
   $('avatar-img').src = settings.avatar ?? blankAvatar();
   $('btn-avatar').textContent = settings.avatar ? 'Change your picture' : 'Choose your picture';
@@ -1940,15 +1927,21 @@ async function setUserName(name) {
 }
 
 async function askName(first) {
-  const res = await ask({
-    title: first ? 'Welcome! What is your name?' : 'Your name',
-    body: 'It is saved with the rides and pins you record, so you can see who mapped what when rides from more than one phone are combined.',
-    input: { value: settings.userName ?? '', placeholder: 'Your first name' },
-    buttons: first
-      ? [{ label: 'CONTINUE', value: 'save', cls: 'go' }]
-      : [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
-  });
-  if (res.button === 'save' && res.text) await setUserName(res.text.slice(0, 40));
+  let again = false;
+  for (;;) {
+    const res = await ask({
+      title: first ? 'Welcome! What is your name?' : 'Your name',
+      body: again ? 'Please type a name first. A nickname is fine.'
+        : 'It is saved with the walks, rides and pins you record, so everyone can see who mapped what.',
+      input: { value: settings.userName ?? '', placeholder: 'Your first name' },
+      buttons: first
+        ? [{ label: 'CONTINUE', value: 'save', cls: 'go' }]
+        : [{ label: 'SAVE', value: 'save', cls: 'go' }, { label: 'Cancel', value: 'cancel' }],
+    });
+    if (res.button === 'save' && res.text?.trim()) { await setUserName(res.text.trim().slice(0, 40)); return; }
+    if (!first) return; // the first time, CONTINUE with an empty box used to leave every walk as "Unknown"
+    again = true;
+  }
 }
 $('btn-name').addEventListener('click', () => askName(false));
 
@@ -2953,7 +2946,7 @@ function renderCloud() {
   const on = !!cloud.code;
   const when = cloud.at ? new Date(cloud.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
   $('sync-info').textContent = !on
-    ? 'Off. Your rides are kept on this device only. Turn it on to keep a copy in your Cloudflare database and to see and change your rides on your other phones and computers.'
+    ? 'Off. Your walks and rides are kept on this device only. Turn it on to keep a safe copy in the cloud and to see them on your other phones and computers.'
     : cloud.busy ? 'On. Syncing now…'
       : cloud.error ? `On, but the last sync did not get through (${cloud.error}). It will try again by itself.`
         : when ? `On. Everything was in step at ${when}.` : 'On. Waiting for a signal to sync.';

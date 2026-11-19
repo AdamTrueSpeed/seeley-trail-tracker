@@ -80,9 +80,9 @@
     </div>
     <div class="panel">
       <div class="layers">
-        <label><input type="checkbox" id="show-raw"><span class="key raw"></span>Raw GPS</label>
-        <label><input type="checkbox" id="show-merged"><span class="key merged" id="key-merged"></span>Merged</label>
-        <label id="show-ref-wrap"><input type="checkbox" id="show-ref"><span class="key ref"></span>Old map</label>
+        <label><input type="checkbox" id="show-raw"><span class="key raw"></span>My tracks</label>
+        <label><input type="checkbox" id="show-merged"><span class="key merged" id="key-merged"></span>Combined</label>
+        <label id="show-ref-wrap"><input type="checkbox" id="show-ref"><span class="key ref"></span>Trail map</label>
       </div>
       <div class="toggle sys"><span><small>Trail system</small><b id="sys-val"></b><small id="sys-note"></small></span><button id="btn-sys" class="mid ghost">Change</button></div>
       <div id="net-stats" class="netstats"></div>
@@ -118,13 +118,14 @@
         <summary>Distance and time travelled</summary>
         <ul id="totals-list" class="coverage"></ul>
       </details>
-      <details id="send-details">
+      <!-- Hidden since 1.44: cloud sync replaced it, and it only ever worked with a send link, which still opens it (checkInvite). -->
+      <details id="send-details" hidden>
         <summary>Send to the map computer</summary>
         <div class="btnrow"><button id="btn-send-map" class="mid">Send rides to my map</button></div>
         <p class="hint">Sends every saved ride and pin to the computer that keeps your trail map. It needs a send link from that computer first.</p>
       </details>
       <details id="coverage" hidden>
-        <summary>Old-map trails ridden so far</summary>
+        <summary>Map trails covered so far</summary>
         <ul id="coverage-list" class="coverage"></ul>
       </details>
       <details id="branch-details" hidden>
@@ -162,7 +163,7 @@
     <h1>You</h1>
     <div class="toggle">
       <img id="avatar-img" class="avatar" alt="">
-      <span>Your name<small id="name-val"></small><small>Saved with every ride and pin you record on this phone.</small></span>
+      <span>Your name<small id="name-val"></small><small>Saved with every walk, ride and pin you record on this phone.</small></span>
       <button id="btn-name" class="mid ghost">Change</button>
     </div>
     <div class="btnrow">
@@ -191,7 +192,7 @@
     </details>
 
     <h1>Share this app</h1>
-    <p class="hint">Friends can scan this with their phone's camera, on Android or iPhone, to open the app and install it. Their rides stay on their own phone.</p>
+    <p class="hint">Friends can scan this with their phone's camera, on Android or iPhone, to open the app and install it. Their walks and rides stay on their own phone.</p>
     <div class="qrcard">
       <img src="icons/qr.svg" alt="QR code that opens Seeley Trail Tracker" width="220" height="220">
       <span id="share-url"></span>
@@ -204,6 +205,10 @@
       <button id="btn-print-qr" class="mid ghost">Print a QR poster</button>
     </div>
 
+    <!-- Since 1.44 the technical settings are folded away, so the page is short for people who never need them. -->
+    <details id="adv-details" class="adv">
+    <summary>Advanced settings</summary>
+    <p class="hint">GPS, methods of travel, the trail map file and how tracks are combined. Most people never need to change these.</p>
     <h1>GPS recording</h1>
     <div class="slider">
       <div class="row"><span>Ignore fixes worse than</span><b id="acc-val"></b></div>
@@ -216,7 +221,7 @@
       <small>Minimum distance moved before the next point is saved.</small>
     </div>
     <label class="toggle"><span>Pause automatically when stopped<small>No pile of dots while you wait at a junction.</small></span><input type="checkbox" id="autopause"></label>
-    <label class="toggle"><span>Keep the screen on while riding<small>Needed: the phone stops giving GPS to the app when the screen turns off.</small></span><input type="checkbox" id="awake"></label>
+    <label class="toggle"><span>Keep the screen on while recording<small>Needed: the phone stops giving GPS to the app when the screen turns off.</small></span><input type="checkbox" id="awake"></label>
     <label class="toggle"><span>Go dark by itself while recording<small>After this long without a touch the screen goes black and locks, but GPS keeps recording. Slide to wake it.</small></span>
       <select id="autodark">
         <option value="0">Never</option>
@@ -228,7 +233,7 @@
     </label>
 
     <h1>Methods of travel</h1>
-    <p class="hint">You pick one each time you press START. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Saved rides. To change it for a saved ride, use its <b>Method</b> button.</p>
+    <p class="hint">You pick one each time you press START. Each pass counts as a strip this wide, centred on the phone, and the distance is added to that method's total under Merge &amp; export. To change it for a saved walk or ride, use its <b>Method</b> button.</p>
     <ul id="veh-list" class="coverage card"></ul>
     <div class="btnrow"><button id="btn-add-method" class="mid">Add a method of travel</button></div>
 
@@ -255,6 +260,7 @@
 
     <h1>Google Earth export</h1>
     <label class="toggle"><span>Trail colour</span><select id="color"></select></label>
+    </details>
 
     <h1>Backup</h1>
     <p class="hint" id="storage-info"></p>
@@ -277,8 +283,8 @@
       <li>Never press the power button during a ride: phones stop giving GPS to web apps the moment the screen is really off, or another app is in front. Use DARK SCREEN instead: it looks off and is safe in a pocket, but keeps recording.</li>
       <li id="tip-ios" hidden>iPhone: if GPS shows as blocked or stays weak, open the iPhone's Settings &gt; Privacy &amp; Security &gt; Location Services &gt; Safari Websites, choose While Using the App and turn on Precise Location. If the screen still dims during a ride, set Display &amp; Brightness &gt; Auto-Lock to Never while riding.</li>
       <li>Wait for the GPS number at the top to turn green before you set off.</li>
-      <li>Everything is stored on this phone only. Save a backup file now and then.</li>
-      <li>To combine rides from two phones, save a backup file on one and use Restore on the other. Each ride keeps the name of whoever recorded it.</li>
+      <li>Turn on cloud sync (under Merge &amp; export) to keep a safe copy of every walk and ride. Without it, everything stays on this phone only: save a backup file now and then.</li>
+      <li>To see walks and rides from two phones together, use cloud sync on both (Add another phone or computer), or save a backup file on one and use Restore on the other. Each one keeps the name of whoever recorded it.</li>
       <li>The app looks for a newer version every time it opens with a signal, and installs it by itself.</li>
     </ul>
   </section>
